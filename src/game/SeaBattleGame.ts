@@ -1,178 +1,691 @@
 // ============================================================
-// Sea Battle (Morskaya Bitva) — Main Game Engine
-// Pirate Edition v2.0 — Aura marking, difficulty select, fleet status
+// Pirate Sea Battle — Main Game Engine (State Machine)
 // ============================================================
 
-import { type Cell, type Position, type Ship, type Animation, type LogMessage, type AIOpponent, type FleetStatus, CellState, GamePhase, Orientation, AnimationType, AIDifficulty, DEFAULT_CONFIG, SHIP_NAMES, getTotalShips, getRandomPhrase, formatCoordinate } from './types';
-import { createAI, easyMode, hardMode, updateAIAfterShot, placeAIShips, autoPlacePlayerShips } from './ai';
-import { drawTitleScreen, drawDifficultyScreen, drawSetupScreen, drawBattleScreen, drawGameOverScreen } from './renderer';
+import {
+  type GameState, type Difficulty, type PlacementMode, type Orientation,
+  type Grid, type Cursor, type Message, type FleetStatus,
+  type Ship,
+  GRID_SIZE, SHIPS, COLORS,
+  createEmptyGrid, canPlaceShip, placeShip, autoPlaceShips,
+  fireAt, getFleetStatus, isAllShipsSunk, getShipsToPlace,
+} from './types';
 
-const LOG_COLORS = { water: '#00ffff', playerShip: '#00ff41', hit: '#ff0040', miss: '#858585', sunk: '#ff6600', gold: '#ffd700', warning: '#ffaa00' };
+import { resetAI, makeBotMove, autoPlace } from './ai';
+
+import {
+  drawLoading, drawMainMenu, drawBotSetup, drawSetup,
+  drawBattle, drawBattle1v1, drawSettings, drawGameOver,
+  drawTransition, drawExit,
+} from './renderer';
 
 export class SeaBattleGame {
-  playerGrid: Cell[][] = []; enemyGrid: Cell[][] = [];
-  playerShips: Ship[] = []; enemyShips: Ship[] = [];
-  phase: GamePhase = GamePhase.TITLE; isPlayerTurn = true; isVictory = false;
-  selectedDifficulty: AIDifficulty = AIDifficulty.HARD; difficultyCursor = 0;
-  setupCursor: Position = { x: 0, y: 0 }; setupOrientation: Orientation = Orientation.HORIZONTAL;
-  shipsToPlace: number[] = []; currentShipIndex = 0;
-  battleCursor: Position = { x: 0, y: 0 };
-  ai: AIOpponent = createAI(AIDifficulty.HARD);
-  animations: Animation[] = []; messageLog: LogMessage[] = [];
-  cursorVisible = true; blinkTimer = 0; titleBlinkVisible = true; titleBlinkTimer = 0;
-  time = 0; keysPressed = new Set<string>(); lastKeyTime: Record<string, number> = {}; keyRepeatDelay = 150;
-  aiTurnTimer = 0; aiTurnDelay = 800; isAIThinking = false;
-  playerShots = 0; playerHits = 0; enemyShots = 0; enemyHits = 0;
-  onInvalidate?: () => void;
+  // ── State ──────────────────────────────────────────────
+  private state: GameState = 'LOADING';
 
-  constructor() { this.init(); }
+  // Timing
+  private loadingProgress = 0;
+  private loadingTimer = 0;
+  private time = 0;
 
-  init(): void {
-    this.playerGrid = this.createEmptyGrid(); this.enemyGrid = this.createEmptyGrid();
-    this.playerShips = []; this.enemyShips = [];
-    this.phase = GamePhase.TITLE; this.isPlayerTurn = true; this.isVictory = false;
-    this.animations = []; this.messageLog = []; this.time = 0;
-    this.aiTurnTimer = 0; this.isAIThinking = false;
-    this.playerShots = 0; this.playerHits = 0; this.enemyShots = 0; this.enemyHits = 0;
-    this.selectedDifficulty = AIDifficulty.HARD; this.difficultyCursor = 0;
-    this.shipsToPlace = []; for (const ship of DEFAULT_CONFIG.ships) { for (let i = 0; i < ship.count; i++) this.shipsToPlace.push(ship.size); }
-    this.currentShipIndex = 0; this.setupCursor = { x: 0, y: 0 }; this.setupOrientation = Orientation.HORIZONTAL;
-    this.battleCursor = { x: 0, y: 0 }; this.ai = createAI(AIDifficulty.HARD);
+  // Menu
+  private menuIndex = 0;
+
+  // Bot setup
+  private botDifficulty: Difficulty = 'easy';
+  private botPlacement: PlacementMode = 'auto';
+  private botSetupRow = 0;
+
+  // Player grids
+  private p1Grid: Grid = createEmptyGrid();
+  private p2Grid: Grid = createEmptyGrid();
+  private enemyGrid: Grid = createEmptyGrid();
+
+  // Placement
+  private placementCursor: Cursor = { x: 0, y: 0 };
+  private placementOrientation: Orientation = 'horizontal';
+  private p1ShipsPlaced: Ship[] = [];
+  private p2ShipsPlaced: Ship[] = [];
+
+  // Battle
+  private battleCursor: Cursor = { x: 0, y: 0 };
+  private isPlayerTurn = true;
+  private current1v1Player = 1;
+  private messages: Message[] = [];
+  private cursorVisible = true;
+  private cursorBlinkTimer = 0;
+  private botThinkingTimer = 0;
+  private isBotThinking = false;
+
+  // Transition
+  private transitionTimer = 0;
+
+  // Game over
+  private gameOverVictory = false;
+  private gameOverWinner = '';
+  private blinkTimer = 0;
+  private blinkVisible = true;
+
+  // Settings
+  private settingsTime = 0;
+
+  // 1v1 placement flow tracking
+  private is1v1Mode = false;
+
+  constructor() {
+    this.state = 'LOADING';
+    this.loadingProgress = 0;
+    this.loadingTimer = 0;
+    this.time = 0;
   }
 
-  createEmptyGrid(): Cell[][] { const s = DEFAULT_CONFIG.gridSize; return Array.from({ length: s }, () => Array.from({ length: s }, () => ({ state: CellState.EMPTY, shipId: null }))); }
+  // ── Update ─────────────────────────────────────────────
 
-  startGame(): void { this.init(); this.phase = GamePhase.DIFFICULTY_SELECT; this.addLog('Выбери сложность, капитан!', LOG_COLORS.gold); }
-  selectDifficulty(difficulty: AIDifficulty): void { this.selectedDifficulty = difficulty; this.ai = createAI(difficulty); this.phase = GamePhase.SETUP; this.playerGrid = this.createEmptyGrid(); this.enemyGrid = this.createEmptyGrid(); this.playerShips = []; this.currentShipIndex = 0; this.addLog(getRandomPhrase('setupStart'), LOG_COLORS.water); this.addLog('Стрелки — движение, Пробел — поворот, Enter — установка', LOG_COLORS.miss); this.addLog('Нажми R для авто-расстановки', LOG_COLORS.gold); }
-  restart(): void { this.startGame(); }
+  update(dt: number, time: number): void {
+    this.time = time;
 
-  isValidShipPlacement(grid: Cell[][], x: number, y: number, size: number, orientation: Orientation): boolean {
-    const gridSize = grid.length;
-    for (let i = 0; i < size; i++) { const px = orientation === Orientation.HORIZONTAL ? x + i : x; const py = orientation === Orientation.VERTICAL ? y + i : y; if (px < 0 || px >= gridSize || py < 0 || py >= gridSize) return false; for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++) { const nx = px + dx, ny = py + dy; if (nx >= 0 && nx < gridSize && ny >= 0 && ny < gridSize && grid[ny][nx].state === CellState.SHIP) return false; } }
-    return true;
-  }
+    switch (this.state) {
+      case 'LOADING':
+        this.loadingTimer += dt;
+        this.loadingProgress = Math.min(this.loadingTimer / 2, 1);
+        if (this.loadingTimer >= 2) {
+          this.state = 'MAIN_MENU';
+        }
+        break;
 
-  placeShip(grid: Cell[][], x: number, y: number, size: number, orientation: Orientation, shipId: number): { grid: Cell[][]; ship: Ship } {
-    const newGrid = grid.map(r => r.map(c => ({ ...c }))); const positions: Position[] = [];
-    for (let i = 0; i < size; i++) { const px = orientation === Orientation.HORIZONTAL ? x + i : x; const py = orientation === Orientation.VERTICAL ? y + i : y; newGrid[py][px] = { state: CellState.SHIP, shipId }; positions.push({ x: px, y: py }); }
-    return { grid: newGrid, ship: { id: shipId, size, positions, hits: [], orientation, isSunk: false } };
-  }
+      case 'BATTLE':
+        this.cursorBlinkTimer += dt;
+        if (this.cursorBlinkTimer > 0.5) {
+          this.cursorBlinkTimer = 0;
+          this.cursorVisible = !this.cursorVisible;
+        }
+        this.handleBotTurn(dt);
+        break;
 
-  tryPlaceShip(): boolean {
-    if (this.currentShipIndex >= this.shipsToPlace.length) return false;
-    const shipSize = this.shipsToPlace[this.currentShipIndex]; const { x, y } = this.setupCursor;
-    if (!this.isValidShipPlacement(this.playerGrid, x, y, shipSize, this.setupOrientation)) { this.addLog('Нельзя разместить здесь! Слишком близко к другому кораблю.', LOG_COLORS.hit); return false; }
-    const shipId = this.playerShips.length; const { grid, ship } = this.placeShip(this.playerGrid, x, y, shipSize, this.setupOrientation, shipId);
-    this.playerGrid = grid; this.playerShips.push(ship); this.currentShipIndex++;
-    this.addLog(`${SHIP_NAMES[shipSize] || 'Корабль'} размещен! (${this.currentShipIndex}/${getTotalShips()})`, LOG_COLORS.playerShip);
-    if (this.currentShipIndex >= this.shipsToPlace.length) this.finishSetup(); return true;
-  }
+      case 'BATTLE_1V1':
+        this.cursorBlinkTimer += dt;
+        if (this.cursorBlinkTimer > 0.5) {
+          this.cursorBlinkTimer = 0;
+          this.cursorVisible = !this.cursorVisible;
+        }
+        break;
 
-  autoPlacePlayer(): void {
-    const remainingSizes = this.shipsToPlace.slice(this.currentShipIndex); if (remainingSizes.length === 0) return;
-    const result = autoPlacePlayerShips(this.playerGrid, remainingSizes, this.playerShips.length); this.playerGrid = result.grid;
-    for (const ship of result.ships) { this.playerShips.push(ship); this.currentShipIndex++; }
-    this.addLog(getRandomPhrase('autoPlace'), LOG_COLORS.gold); this.finishSetup();
-  }
+      case 'TRANSITION':
+        this.transitionTimer -= dt;
+        if (this.transitionTimer <= 0) {
+          this.state = 'BATTLE_1V1';
+        }
+        break;
 
-  private finishSetup(): void {
-    const shipSizes: number[] = []; for (const s of DEFAULT_CONFIG.ships) for (let i = 0; i < s.count; i++) shipSizes.push(s.size);
-    const result = placeAIShips(this.enemyGrid, shipSizes); this.enemyGrid = result.grid; this.enemyShips = result.ships;
-    this.isPlayerTurn = Math.random() < 0.5;
-    this.addLog('Все корабли на позициях!', LOG_COLORS.playerShip);
-    setTimeout(() => { this.phase = GamePhase.BATTLE; this.addLog(getRandomPhrase('battleStart'), LOG_COLORS.hit); if (this.isPlayerTurn) this.addLog('Первый ход за тобой, капитан!', LOG_COLORS.gold); else { this.isAIThinking = true; this.addLog('Враг ходит первым! Приготовиться!', LOG_COLORS.warning); } this.onInvalidate?.(); }, 600);
-  }
+      case 'GAME_OVER':
+        this.blinkTimer += dt;
+        if (this.blinkTimer > 0.6) {
+          this.blinkTimer = 0;
+          this.blinkVisible = !this.blinkVisible;
+        }
+        break;
 
-  markAuraAroundShip(grid: Cell[][], ship: Ship): Cell[][] {
-    const newGrid = grid.map(r => r.map(c => ({ ...c }))); const size = grid.length;
-    for (const pos of ship.positions) for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++) { if (dx === 0 && dy === 0) continue; const nx = pos.x + dx, ny = pos.y + dy; if (nx >= 0 && nx < size && ny >= 0 && ny < size && newGrid[ny][nx].state === CellState.EMPTY) newGrid[ny][nx] = { state: CellState.MISS, shipId: null }; }
-    return newGrid;
-  }
+      case 'SETTINGS':
+        this.settingsTime = time;
+        break;
 
-  playerFire(): boolean {
-    if (!this.isPlayerTurn || this.phase !== GamePhase.BATTLE) return false;
-    const { x, y } = this.battleCursor; const cell = this.enemyGrid[y][x];
-    if (cell.state === CellState.HIT || cell.state === CellState.MISS || cell.state === CellState.SUNK) { this.addLog('Сюда уже стреляли! Выбери другую клетку.', LOG_COLORS.warning); return false; }
-    this.playerShots++; let newGrid = this.enemyGrid.map(r => r.map(c => ({ ...c })));
-    if (cell.state === CellState.SHIP) {
-      newGrid[y][x] = { state: CellState.HIT, shipId: cell.shipId }; this.enemyGrid = newGrid; this.playerHits++;
-      const ship = this.enemyShips.find(s => s.id === cell.shipId);
-      if (ship) { ship.hits.push({ x, y }); if (ship.hits.length === ship.size) { ship.isSunk = true; for (const p of ship.positions) this.enemyGrid[p.y][p.x] = { state: CellState.SUNK, shipId: ship.id }; this.enemyGrid = this.markAuraAroundShip(this.enemyGrid, ship); this.addLog(`УБИЛ! ${SHIP_NAMES[ship.size] || 'Корабль'} потоплен!`, LOG_COLORS.sunk); this.addLog(getRandomPhrase('playerSunk'), LOG_COLORS.sunk); this.addAnimation(x + 10, y, AnimationType.SINK_FLASH, 6); } else { this.addLog(`РАНИЛ! Попадание в ${SHIP_NAMES[ship.size] || 'Корабль'} на ${formatCoordinate(x, y)}!`, LOG_COLORS.hit); this.addLog(getRandomPhrase('playerHit'), LOG_COLORS.hit); } }
-      this.addAnimation(x + 10, y, AnimationType.HIT_EXPLOSION, 4); this.addTextBurst(x + 10, y, '*БУМ*', LOG_COLORS.hit);
-      if (this.checkWin(this.enemyShips)) { this.isVictory = true; setTimeout(() => { this.phase = GamePhase.GAME_OVER; this.onInvalidate?.(); }, 1200); } return true;
-    } else {
-      newGrid[y][x] = { state: CellState.MISS, shipId: null }; this.enemyGrid = newGrid;
-      this.addLog(`Мимо! Выстрел в ${formatCoordinate(x, y)}.`, LOG_COLORS.miss); this.addLog(getRandomPhrase('playerMiss'), LOG_COLORS.miss);
-      this.addAnimation(x + 10, y, AnimationType.MISS_RIPPLE, 4); this.addTextBurst(x + 10, y, '*плюх*', LOG_COLORS.miss);
-      this.isPlayerTurn = false; this.isAIThinking = true; this.aiTurnTimer = 0; return true;
+      case 'MAIN_MENU':
+      case 'BOT_SETUP':
+      case 'P1_SETUP':
+      case 'P2_SETUP':
+      case 'EXIT':
+        // Static screens, no timers needed
+        break;
     }
   }
 
-  aiFire(): void {
-    const pos = this.ai.difficulty === AIDifficulty.EASY ? easyMode(this.playerGrid) : hardMode(this.playerGrid, this.ai);
-    const cell = this.playerGrid[pos.y][pos.x]; let newGrid = this.playerGrid.map(r => r.map(c => ({ ...c })));
-    let isHit = false, isSunk = false; this.enemyShots++;
-    if (cell.state === CellState.SHIP) {
-      newGrid[pos.y][pos.x] = { state: CellState.HIT, shipId: cell.shipId }; isHit = true; this.enemyHits++;
-      const ship = this.playerShips.find(s => s.id === cell.shipId);
-      if (ship) { ship.hits.push(pos); if (ship.hits.length === ship.size) { ship.isSunk = true; isSunk = true; for (const p of ship.positions) newGrid[p.y][p.x] = { state: CellState.SUNK, shipId: ship.id }; newGrid = this.markAuraAroundShip(newGrid, ship); this.addLog(`Враг потопил ${SHIP_NAMES[ship.size] || 'Корабль'}!`, LOG_COLORS.sunk); this.addLog(getRandomPhrase('aiSunk'), LOG_COLORS.sunk); this.addAnimation(pos.x, pos.y, AnimationType.SINK_FLASH, 6); } else { this.addLog(`Враг ранил ${SHIP_NAMES[ship.size] || 'Корабль'} на ${formatCoordinate(pos.x, pos.y)}!`, LOG_COLORS.hit); this.addLog(getRandomPhrase('aiHit'), LOG_COLORS.hit); } }
-      this.addAnimation(pos.x, pos.y, AnimationType.HIT_EXPLOSION, 4);
-    } else { newGrid[pos.y][pos.x] = { state: CellState.MISS, shipId: null }; this.addLog(`Враг промахнулся на ${formatCoordinate(pos.x, pos.y)}.`, LOG_COLORS.miss); this.addLog(getRandomPhrase('aiMiss'), LOG_COLORS.miss); this.addAnimation(pos.x, pos.y, AnimationType.MISS_RIPPLE, 4); }
-    this.playerGrid = newGrid; this.ai = updateAIAfterShot(this.ai, pos, isHit, isSunk, this.playerGrid);
-    if (this.checkWin(this.playerShips)) { this.isVictory = false; setTimeout(() => { this.phase = GamePhase.GAME_OVER; this.onInvalidate?.(); }, 1200); return; }
-    if (isHit && !isSunk) this.aiTurnTimer = 0; else { this.isPlayerTurn = true; this.isAIThinking = false; }
+  private handleBotTurn(dt: number): void {
+    if (!this.isPlayerTurn && !this.isBotThinking) {
+      this.isBotThinking = true;
+      this.botThinkingTimer = 0.8; // Slight delay before bot fires
+    }
+
+    if (this.isBotThinking) {
+      this.botThinkingTimer -= dt;
+      if (this.botThinkingTimer <= 0) {
+        this.isBotThinking = false;
+        const move = makeBotMove(this.p1Grid, this.botDifficulty);
+
+        let msgText = `Бот стреляет ${COL_LABELS[move.x]}${move.y + 1}: `;
+        if (move.result.sunk) {
+          msgText += `ПОТОПЛЕН! (${move.result.shipSize} пал.)`;
+          this.addMessage(msgText, 'sunk');
+        } else if (move.result.hit) {
+          msgText += 'ПОПАДАНИЕ!';
+          this.addMessage(msgText, 'hit');
+        } else {
+          msgText += 'МИМО...';
+          this.addMessage(msgText, 'miss');
+        }
+
+        if (isAllShipsSunk(this.p1Grid)) {
+          this.gameOverVictory = false;
+          this.gameOverWinner = 'БОТ';
+          this.addMessage('Ваш флот разбит! Поражение...', 'defeat');
+          this.state = 'GAME_OVER';
+          return;
+        }
+
+        if (!move.result.hit) {
+          this.isPlayerTurn = true;
+        } else {
+          // Bot gets another turn on hit, continue loop
+          this.isBotThinking = true;
+          this.botThinkingTimer = 0.5;
+        }
+      }
+    }
   }
 
-  checkWin(ships: Ship[]): boolean { return ships.length > 0 && ships.every(s => s.isSunk); }
-
-  getFleetStatus(ships: Ship[]): FleetStatus {
-    const sunkShips = ships.filter(s => s.isSunk).length; const totalDecks = ships.reduce((sum, s) => sum + s.size, 0); const remainingDecks = ships.reduce((sum, s) => sum + (s.size - s.hits.length), 0);
-    return { totalShips: ships.length, sunkShips, remainingDecks, totalDecks, ships: ships.map(s => ({ size: s.size, name: SHIP_NAMES[s.size] || 'Корабль', isSunk: s.isSunk })) };
-  }
-
-  addAnimation(x: number, y: number, type: AnimationType, maxFrames: number): void { this.animations.push({ type, x, y, frame: 0, maxFrames, timer: 0 }); }
-  addTextBurst(x: number, y: number, text: string, color: string): void { this.animations.push({ type: AnimationType.TEXT_BURST, x, y, frame: 0, maxFrames: 8, timer: 0, text, color }); }
-  updateAnimations(dt: number): void { for (const a of this.animations) { a.timer += dt; if (a.timer > 100) { a.timer = 0; a.frame++; } } this.animations = this.animations.filter(a => a.frame < a.maxFrames); }
-  addLog(text: string, color: string): void { this.messageLog.push({ text, color, timestamp: Date.now() }); if (this.messageLog.length > 25) this.messageLog = this.messageLog.slice(-25); }
-
-  handleKeyDown(key: string): void {
-    this.keysPressed.add(key);
-    switch (this.phase) { case GamePhase.TITLE: if (key === 'Enter') { this.startGame(); this.onInvalidate?.(); } break; case GamePhase.DIFFICULTY_SELECT: this.handleDifficultyInput(key); break; case GamePhase.SETUP: this.handleSetupInput(key); break; case GamePhase.BATTLE: this.handleBattleInput(key); break; case GamePhase.GAME_OVER: if (key === 'Enter') { this.restart(); this.onInvalidate?.(); } break; }
-  }
-  handleKeyUp(key: string): void { this.keysPressed.delete(key); this.lastKeyTime[key] = 0; }
-
-  private handleDifficultyInput(key: string): void {
-    switch (key) { case 'ArrowUp': case 'ArrowDown': this.difficultyCursor = this.difficultyCursor === 0 ? 1 : 0; break; case 'Enter': this.selectedDifficulty = this.difficultyCursor === 0 ? AIDifficulty.EASY : AIDifficulty.HARD; this.selectDifficulty(this.selectedDifficulty); break; }
-    this.onInvalidate?.();
-  }
-
-  private handleSetupInput(key: string): void {
-    const gridSize = DEFAULT_CONFIG.gridSize;
-    switch (key) { case 'ArrowUp': this.setupCursor.y = Math.max(0, this.setupCursor.y - 1); break; case 'ArrowDown': this.setupCursor.y = Math.min(gridSize - 1, this.setupCursor.y + 1); break; case 'ArrowLeft': this.setupCursor.x = Math.max(0, this.setupCursor.x - 1); break; case 'ArrowRight': this.setupCursor.x = Math.min(gridSize - 1, this.setupCursor.x + 1); break; case ' ': { const isH = this.setupOrientation === Orientation.HORIZONTAL; if (this.currentShipIndex < this.shipsToPlace.length) { const size = this.shipsToPlace[this.currentShipIndex]; if (!isH) this.setupCursor.x = Math.min(gridSize - size, this.setupCursor.x); else this.setupCursor.y = Math.min(gridSize - size, this.setupCursor.y); } this.setupOrientation = isH ? Orientation.VERTICAL : Orientation.HORIZONTAL; break; } case 'Enter': case 'r': case 'R': if (key === 'r' || key === 'R') this.autoPlacePlayer(); else this.tryPlaceShip(); break; }
-    if (this.currentShipIndex < this.shipsToPlace.length) { const size = this.shipsToPlace[this.currentShipIndex]; if (this.setupOrientation === Orientation.HORIZONTAL) this.setupCursor.x = Math.min(gridSize - size, this.setupCursor.x); else this.setupCursor.y = Math.min(gridSize - size, this.setupCursor.y); }
-    this.onInvalidate?.();
-  }
-
-  private handleBattleInput(key: string): void { if (!this.isPlayerTurn || this.isAIThinking) return; const gridSize = DEFAULT_CONFIG.gridSize; switch (key) { case 'ArrowUp': this.battleCursor.y = Math.max(0, this.battleCursor.y - 1); break; case 'ArrowDown': this.battleCursor.y = Math.min(gridSize - 1, this.battleCursor.y + 1); break; case 'ArrowLeft': this.battleCursor.x = Math.max(0, this.battleCursor.x - 1); break; case 'ArrowRight': this.battleCursor.x = Math.min(gridSize - 1, this.battleCursor.x + 1); break; case 'Enter': this.playerFire(); break; } this.onInvalidate?.(); }
-  handleContinuousInput(): void { const now = Date.now(); for (const key of ['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight']) if (this.keysPressed.has(key)) { const last = this.lastKeyTime[key] || 0; if (now - last > this.keyRepeatDelay) { this.lastKeyTime[key] = now; this.handleKeyDown(key); } } }
-
-  update(dt: number): void {
-    this.time += dt / 1000; this.blinkTimer += dt; if (this.blinkTimer > 500) { this.blinkTimer = 0; this.cursorVisible = !this.cursorVisible; }
-    this.titleBlinkTimer += dt; if (this.titleBlinkTimer > 700) { this.titleBlinkTimer = 0; this.titleBlinkVisible = !this.titleBlinkVisible; }
-    this.updateAnimations(dt); this.handleContinuousInput();
-    if (this.phase === GamePhase.BATTLE && !this.isPlayerTurn && this.isAIThinking) { this.aiTurnTimer += dt; if (this.aiTurnTimer >= this.aiTurnDelay) { this.aiTurnTimer = 0; this.aiFire(); this.onInvalidate?.(); } }
-  }
+  // ── Render ─────────────────────────────────────────────
 
   render(ctx: CanvasRenderingContext2D, w: number, h: number): void {
-    switch (this.phase) {
-      case GamePhase.TITLE: drawTitleScreen(ctx, w, h, this.time, this.titleBlinkVisible); break;
-      case GamePhase.DIFFICULTY_SELECT: drawDifficultyScreen(ctx, w, h, this.time, this.difficultyCursor, this.titleBlinkVisible); break;
-      case GamePhase.SETUP: { const cs = this.shipsToPlace[this.currentShipIndex] || 0; const isV = this.currentShipIndex < this.shipsToPlace.length ? this.isValidShipPlacement(this.playerGrid, this.setupCursor.x, this.setupCursor.y, cs, this.setupOrientation) : false; drawSetupScreen(ctx, w, h, this.time, this.playerGrid, this.setupCursor, this.cursorVisible, cs, this.setupOrientation, isV, this.currentShipIndex, getTotalShips(), this.playerShips); break; }
-      case GamePhase.BATTLE: drawBattleScreen(ctx, w, h, this.time, this.playerGrid, this.enemyGrid, this.isPlayerTurn ? this.battleCursor : null, this.cursorVisible, this.isPlayerTurn, this.messageLog, this.getFleetStatus(this.playerShips), this.getFleetStatus(this.enemyShips), this.animations, this.battleCursor); break;
-      case GamePhase.GAME_OVER: drawGameOverScreen(ctx, w, h, this.time, this.isVictory, this.titleBlinkVisible, this.messageLog); break;
+    ctx.clearRect(0, 0, w, h);
+
+    switch (this.state) {
+      case 'LOADING':
+        drawLoading(ctx, w, h, this.time, this.loadingProgress);
+        break;
+
+      case 'MAIN_MENU':
+        drawMainMenu(ctx, w, h, this.menuIndex, this.time);
+        break;
+
+      case 'BOT_SETUP':
+        drawBotSetup(ctx, w, h, this.botDifficulty, this.botPlacement, this.botSetupRow, this.time);
+        break;
+
+      case 'P1_SETUP': {
+        const shipsToPlace = getShipsToPlace(this.p1ShipsPlaced);
+        const currentShip = shipsToPlace[0];
+        const isValid = currentShip ? canPlaceShip(
+          this.p1Grid, this.placementCursor.x, this.placementCursor.y,
+          currentShip.size, this.placementOrientation,
+        ) : true;
+        const totalShips = SHIPS.reduce((s, c) => s + c.count, 0);
+        drawSetup(ctx, w, h, this.p1Grid, this.placementCursor,
+          this.p1ShipsPlaced.length, totalShips,
+          this.placementOrientation, isValid, this.time,
+          'ИГРОК 1');
+        break;
+      }
+
+      case 'P2_SETUP': {
+        const shipsToPlace = getShipsToPlace(this.p2ShipsPlaced);
+        const currentShip = shipsToPlace[0];
+        const isValid = currentShip ? canPlaceShip(
+          this.p2Grid, this.placementCursor.x, this.placementCursor.y,
+          currentShip.size, this.placementOrientation,
+        ) : true;
+        const totalShips = SHIPS.reduce((s, c) => s + c.count, 0);
+        drawSetup(ctx, w, h, this.p2Grid, this.placementCursor,
+          this.p2ShipsPlaced.length, totalShips,
+          this.placementOrientation, isValid, this.time,
+          'ИГРОК 2');
+        break;
+      }
+
+      case 'BATTLE':
+        drawBattle(ctx, w, h, this.p1Grid, this.enemyGrid,
+          getFleetStatus(this.p1Grid), getFleetStatus(this.enemyGrid),
+          this.messages, this.isPlayerTurn, this.battleCursor,
+          this.cursorVisible, this.time);
+        break;
+
+      case 'BATTLE_1V1': {
+        const isP1Turn = this.current1v1Player === 1;
+        const activeGrid = isP1Turn ? this.p2Grid : this.p1Grid;
+        const inactiveGrid = isP1Turn ? this.p1Grid : this.p2Grid;
+        const activeFleet = getFleetStatus(activeGrid);
+        const inactiveFleet = getFleetStatus(inactiveGrid);
+        drawBattle1v1(ctx, w, h, inactiveGrid, activeGrid,
+          inactiveFleet, activeFleet, this.messages,
+          this.current1v1Player, this.battleCursor,
+          this.cursorVisible, this.time);
+        break;
+      }
+
+      case 'TRANSITION': {
+        const pName = this.current1v1Player === 1 ? 'Игроку 1' : 'Игроку 2';
+        drawTransition(ctx, w, h, pName, this.transitionTimer);
+        break;
+      }
+
+      case 'GAME_OVER':
+        drawGameOver(ctx, w, h, this.gameOverVictory, this.time,
+          this.blinkVisible, this.gameOverWinner);
+        break;
+
+      case 'SETTINGS':
+        drawSettings(ctx, w, h, this.time);
+        break;
+
+      case 'EXIT':
+        drawExit(ctx, w, h, this.time);
+        break;
     }
+  }
+
+  // ── Input ──────────────────────────────────────────────
+
+  handleKeyDown(key: string): void {
+    switch (this.state) {
+      case 'MAIN_MENU':
+        this.handleMenuInput(key);
+        break;
+      case 'BOT_SETUP':
+        this.handleBotSetupInput(key);
+        break;
+      case 'P1_SETUP':
+        this.handlePlacementInput(key, 1);
+        break;
+      case 'P2_SETUP':
+        this.handlePlacementInput(key, 2);
+        break;
+      case 'BATTLE':
+        this.handleBattleInput(key);
+        break;
+      case 'BATTLE_1V1':
+        this.handleBattle1v1Input(key);
+        break;
+      case 'GAME_OVER':
+        if (key === 'Enter') {
+          this.resetToMenu();
+        }
+        break;
+      case 'SETTINGS':
+        if (key === 'Enter' || key === 'Escape') {
+          this.state = 'MAIN_MENU';
+        }
+        break;
+      case 'EXIT':
+        // Do nothing, wait for F5
+        break;
+    }
+  }
+
+  handleKeyUp(_key: string): void {
+    // No key-up handling needed
+  }
+
+  // ── Input handlers ─────────────────────────────────────
+
+  private handleMenuInput(key: string): void {
+    switch (key) {
+      case 'ArrowUp':
+        this.menuIndex = (this.menuIndex - 1 + 4) % 4;
+        break;
+      case 'ArrowDown':
+        this.menuIndex = (this.menuIndex + 1) % 4;
+        break;
+      case 'Enter':
+        this.activateMenuItem(this.menuIndex);
+        break;
+    }
+  }
+
+  private activateMenuItem(index: number): void {
+    switch (index) {
+      case 0: // BOT_SETUP
+        this.state = 'BOT_SETUP';
+        this.botSetupRow = 0;
+        this.is1v1Mode = false;
+        break;
+      case 1: // 1v1
+        this.is1v1Mode = true;
+        this.start1v1Placement();
+        break;
+      case 2: // Settings
+        this.state = 'SETTINGS';
+        break;
+      case 3: // Exit
+        this.state = 'EXIT';
+        break;
+    }
+  }
+
+  private handleBotSetupInput(key: string): void {
+    switch (key) {
+      case 'ArrowUp':
+        this.botSetupRow = (this.botSetupRow - 1 + 3) % 3;
+        break;
+      case 'ArrowDown':
+        this.botSetupRow = (this.botSetupRow + 1) % 3;
+        break;
+      case 'ArrowLeft':
+        if (this.botSetupRow === 0) {
+          this.botDifficulty = this.botDifficulty === 'easy' ? 'hard' : 'easy';
+        } else if (this.botSetupRow === 1) {
+          this.botPlacement = this.botPlacement === 'auto' ? 'manual' : 'auto';
+        }
+        break;
+      case 'ArrowRight':
+        if (this.botSetupRow === 0) {
+          this.botDifficulty = this.botDifficulty === 'easy' ? 'hard' : 'easy';
+        } else if (this.botSetupRow === 1) {
+          this.botPlacement = this.botPlacement === 'auto' ? 'manual' : 'auto';
+        }
+        break;
+      case 'Enter':
+        if (this.botSetupRow === 2) {
+          this.startBotBattle();
+        }
+        break;
+      case 'Escape':
+        this.state = 'MAIN_MENU';
+        break;
+    }
+  }
+
+  private startBotBattle(): void {
+    // Reset grids
+    this.p1Grid = createEmptyGrid();
+    this.enemyGrid = createEmptyGrid();
+    this.p1ShipsPlaced = [];
+    this.messages = [];
+    resetAI();
+
+    if (this.botPlacement === 'auto') {
+      // Auto-place both
+      autoPlace(this.p1Grid);
+      this.p1Grid.ships.forEach(s => this.p1ShipsPlaced.push(s));
+      autoPlace(this.enemyGrid);
+      this.startBattle();
+    } else {
+      // Manual placement for player, auto for bot
+      autoPlace(this.enemyGrid);
+      this.placementCursor = { x: 0, y: 0 };
+      this.placementOrientation = 'horizontal';
+      this.state = 'P1_SETUP';
+      this.is1v1Mode = false;
+    }
+  }
+
+  private start1v1Placement(): void {
+    this.p1Grid = createEmptyGrid();
+    this.p2Grid = createEmptyGrid();
+    this.p1ShipsPlaced = [];
+    this.p2ShipsPlaced = [];
+    this.messages = [];
+    this.placementCursor = { x: 0, y: 0 };
+    this.placementOrientation = 'horizontal';
+    this.state = 'P1_SETUP';
+  }
+
+  private handlePlacementInput(key: string, player: number): void {
+    const grid = player === 1 ? this.p1Grid : this.p2Grid;
+    const placed = player === 1 ? this.p1ShipsPlaced : this.p2ShipsPlaced;
+    const shipsToPlace = getShipsToPlace(placed);
+
+    if (shipsToPlace.length === 0) {
+      // All ships placed
+      if (player === 1 && this.is1v1Mode) {
+        this.state = 'P2_SETUP';
+        this.placementCursor = { x: 0, y: 0 };
+        this.placementOrientation = 'horizontal';
+        return;
+      } else if (player === 2 && this.is1v1Mode) {
+        this.start1v1Battle();
+        return;
+      } else if (player === 1 && !this.is1v1Mode) {
+        this.startBattle();
+        return;
+      }
+    }
+
+    const currentShip = shipsToPlace[0];
+
+    switch (key) {
+      case 'ArrowUp':
+        this.placementCursor.y = Math.max(0, this.placementCursor.y - 1);
+        break;
+      case 'ArrowDown':
+        this.placementCursor.y = Math.min(GRID_SIZE - 1, this.placementCursor.y + 1);
+        break;
+      case 'ArrowLeft':
+        this.placementCursor.x = Math.max(0, this.placementCursor.x - 1);
+        break;
+      case 'ArrowRight':
+        this.placementCursor.x = Math.min(GRID_SIZE - 1, this.placementCursor.x + 1);
+        break;
+      case ' ': // Space to rotate
+        this.placementOrientation = this.placementOrientation === 'horizontal' ? 'vertical' : 'horizontal';
+        break;
+      case 'Enter': {
+        const size = currentShip.size;
+        if (canPlaceShip(grid, this.placementCursor.x, this.placementCursor.y, size, this.placementOrientation)) {
+          const ship = placeShip(grid, this.placementCursor.x, this.placementCursor.y, size, this.placementOrientation);
+          placed.push(ship);
+          // Check if all placed
+          const remaining = getShipsToPlace(placed);
+          if (remaining.length === 0) {
+            if (player === 1 && this.is1v1Mode) {
+              this.state = 'P2_SETUP';
+              this.placementCursor = { x: 0, y: 0 };
+              this.placementOrientation = 'horizontal';
+            } else if (player === 2 && this.is1v1Mode) {
+              this.start1v1Battle();
+            } else {
+              this.startBattle();
+            }
+          }
+        }
+        break;
+      }
+      case 'r':
+      case 'R': {
+        // Auto-place all remaining
+        grid.cells = createEmptyGrid().cells;
+        grid.ships = [];
+        // Keep already placed ships
+        for (const s of placed) {
+          if (s.orientation === 'horizontal') {
+            for (let i = 0; i < s.size; i++) grid.cells[s.y][s.x + i] = 'ship';
+          } else {
+            for (let i = 0; i < s.size; i++) grid.cells[s.y + i][s.x] = 'ship';
+          }
+          grid.ships.push(s);
+        }
+        // Place remaining
+        const remainingShips = getShipsToPlace(placed);
+        for (const rs of remainingShips) {
+          let placedOk = false;
+          for (let attempts = 0; attempts < 500 && !placedOk; attempts++) {
+            const x = Math.floor(Math.random() * GRID_SIZE);
+            const y = Math.floor(Math.random() * GRID_SIZE);
+            const orient: Orientation = Math.random() > 0.5 ? 'horizontal' : 'vertical';
+            if (canPlaceShip(grid, x, y, rs.size, orient)) {
+              const s = placeShip(grid, x, y, rs.size, orient);
+              placed.push(s);
+              placedOk = true;
+            }
+          }
+        }
+        if (player === 1 && this.is1v1Mode) {
+          this.state = 'P2_SETUP';
+          this.placementCursor = { x: 0, y: 0 };
+          this.placementOrientation = 'horizontal';
+        } else if (player === 2 && this.is1v1Mode) {
+          this.start1v1Battle();
+        } else {
+          this.startBattle();
+        }
+        break;
+      }
+      case 'Escape':
+        this.resetToMenu();
+        break;
+    }
+  }
+
+  private startBattle(): void {
+    this.battleCursor = { x: 0, y: 0 };
+    this.isPlayerTurn = Math.random() > 0.5;
+    this.messages = [];
+    this.cursorVisible = true;
+    this.isBotThinking = false;
+    this.botThinkingTimer = 0;
+    resetAI();
+
+    if (this.isPlayerTurn) {
+      this.addMessage('Вы ходите первым!', 'info');
+    } else {
+      this.addMessage('Бот ходит первым!', 'info');
+    }
+
+    this.state = 'BATTLE';
+  }
+
+  private start1v1Battle(): void {
+    this.battleCursor = { x: 0, y: 0 };
+    this.current1v1Player = Math.random() > 0.5 ? 1 : 2;
+    this.messages = [];
+    this.cursorVisible = true;
+    resetAI();
+
+    this.addMessage(`Игрок ${this.current1v1Player} ходит первым!`, 'info');
+    this.state = 'BATTLE_1V1';
+  }
+
+  private handleBattleInput(key: string): void {
+    if (!this.isPlayerTurn) return; // Bot is thinking
+
+    switch (key) {
+      case 'ArrowUp':
+        this.battleCursor.y = Math.max(0, this.battleCursor.y - 1);
+        break;
+      case 'ArrowDown':
+        this.battleCursor.y = Math.min(GRID_SIZE - 1, this.battleCursor.y + 1);
+        break;
+      case 'ArrowLeft':
+        this.battleCursor.x = Math.max(0, this.battleCursor.x - 1);
+        break;
+      case 'ArrowRight':
+        this.battleCursor.x = Math.min(GRID_SIZE - 1, this.battleCursor.x + 1);
+        break;
+      case 'Enter':
+        this.playerFire(this.enemyGrid, this.battleCursor.x, this.battleCursor.y);
+        break;
+      case 'Escape':
+        this.resetToMenu();
+        break;
+    }
+  }
+
+  private handleBattle1v1Input(key: string): void {
+    switch (key) {
+      case 'ArrowUp':
+        this.battleCursor.y = Math.max(0, this.battleCursor.y - 1);
+        break;
+      case 'ArrowDown':
+        this.battleCursor.y = Math.min(GRID_SIZE - 1, this.battleCursor.y + 1);
+        break;
+      case 'ArrowLeft':
+        this.battleCursor.x = Math.max(0, this.battleCursor.x - 1);
+        break;
+      case 'ArrowRight':
+        this.battleCursor.x = Math.min(GRID_SIZE - 1, this.battleCursor.x + 1);
+        break;
+      case 'Enter': {
+        const targetGrid = this.current1v1Player === 1 ? this.p2Grid : this.p1Grid;
+        const result = fireAt(targetGrid, this.battleCursor.x, this.battleCursor.y);
+        const label = COL_LABELS[this.battleCursor.x];
+        const row = this.battleCursor.y + 1;
+        const playerName = this.current1v1Player === 1 ? 'ИГРОК 1' : 'ИГРОК 2';
+
+        let msg = `${playerName} → ${label}${row}: `;
+        if (result.sunk) {
+          msg += `ПОТОПЛЕН!`;
+          this.addMessage(msg, 'sunk');
+        } else if (result.hit) {
+          msg += `ПОПАДАНИЕ!`;
+          this.addMessage(msg, 'hit');
+        } else {
+          msg += `МИМО...`;
+          this.addMessage(msg, 'miss');
+        }
+
+        if (isAllShipsSunk(targetGrid)) {
+          this.gameOverVictory = true;
+          this.gameOverWinner = playerName;
+          this.addMessage(`${playerName} ПОБЕЖДАЕТ!`, 'victory');
+          this.state = 'GAME_OVER';
+          return;
+        }
+
+        if (!result.hit) {
+          // Switch player with transition
+          this.current1v1Player = this.current1v1Player === 1 ? 2 : 1;
+          this.transitionTimer = 3;
+          this.state = 'TRANSITION';
+          this.battleCursor = { x: 0, y: 0 };
+        }
+        // Hit = same player continues
+        break;
+      }
+      case 'Escape':
+        this.resetToMenu();
+        break;
+    }
+  }
+
+  private playerFire(grid: Grid, x: number, y: number): void {
+    const cell = grid.cells[y][x];
+    if (cell === 'hit' || cell === 'miss' || cell === 'sunk') {
+      return; // Already fired here
+    }
+
+    const result = fireAt(grid, x, y);
+    const label = COL_LABELS[x];
+    const row = y + 1;
+
+    if (result.sunk) {
+      this.addMessage(`Вы → ${label}${row}: ПОТОПЛЕН! (${result.shipSize} пал.)`, 'sunk');
+    } else if (result.hit) {
+      this.addMessage(`Вы → ${label}${row}: ПОПАДАНИЕ!`, 'hit');
+    } else {
+      this.addMessage(`Вы → ${label}${row}: МИМО...`, 'miss');
+    }
+
+    if (isAllShipsSunk(grid)) {
+      this.gameOverVictory = true;
+      this.gameOverWinner = 'ВЫ';
+      this.addMessage('Вы уничтожили вражеский флот! ПОБЕДА!', 'victory');
+      this.state = 'GAME_OVER';
+      return;
+    }
+
+    if (!result.hit) {
+      this.isPlayerTurn = false;
+      this.isBotThinking = false;
+    }
+  }
+
+  private addMessage(text: string, type: 'info' | 'hit' | 'miss' | 'sunk' | 'victory' | 'defeat'): void {
+    this.messages.push({ text, time: this.time, type });
+    if (this.messages.length > 20) {
+      this.messages.shift();
+    }
+  }
+
+  private resetToMenu(): void {
+    this.state = 'MAIN_MENU';
+    this.menuIndex = 0;
+    this.p1Grid = createEmptyGrid();
+    this.p2Grid = createEmptyGrid();
+    this.enemyGrid = createEmptyGrid();
+    this.p1ShipsPlaced = [];
+    this.p2ShipsPlaced = [];
+    this.messages = [];
+    this.is1v1Mode = false;
+    resetAI();
   }
 }
 
-export { GamePhase, CellState, Orientation, AnimationType, AIDifficulty, getTotalShips };
-export type { Cell, Position, Ship, Animation, LogMessage };
+// Export labels for renderer
+const COL_LABELS = ['А', 'Б', 'В', 'Г', 'Д', 'Е', 'Ж', 'З', 'И', 'К'];
