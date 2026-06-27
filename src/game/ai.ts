@@ -1,40 +1,144 @@
 // ============================================================
-// Sea Battle AI Opponent — Pirate Edition v2.0
+// Pirate Sea Battle — AI & Placement Logic
 // ============================================================
 
-import { type Position, type AIOpponent, type Cell, type Ship, CellState, AIState, AIDifficulty } from './types';
+import {
+  type Grid, type Ship, type Cursor, type Message,
+  COLORS, GRID_SIZE, COL_LABELS, SHIPS,
+  createEmptyGrid, canPlaceShip, placeShip, autoPlaceShips, fireAt, markAura,
+  isAllShipsSunk, getFleetStatus, cloneGrid,
+} from './types';
 
-export function createAI(difficulty: AIDifficulty = AIDifficulty.HARD): AIOpponent { return { difficulty, state: AIState.SEARCH, lastHit: null, hitDirection: null, targets: [] }; }
+// ─── helpers ───
 
-function getAvailableCells(grid: Cell[][]): Position[] { const avail: Position[] = [], size = grid.length; for (let y = 0; y < size; y++) for (let x = 0; x < size; x++) { const cell = grid[y][x]; if (cell.state === CellState.EMPTY || cell.state === CellState.SHIP) avail.push({ x, y }); } return avail; }
-function isAvailable(grid: Cell[][], x: number, y: number): boolean { const size = grid.length; if (x < 0 || x >= size || y < 0 || y >= size) return false; const cell = grid[y][x]; return cell.state === CellState.EMPTY || cell.state === CellState.SHIP; }
+function isInside(x: number, y: number): boolean {
+  return x >= 0 && x < GRID_SIZE && y >= 0 && y < GRID_SIZE;
+}
 
-export function easyMode(grid: Cell[][]): Position { const avail = getAvailableCells(grid); if (avail.length === 0) return { x: 0, y: 0 }; return avail[Math.floor(Math.random() * avail.length)]; }
+function isFreeForShot(grid: Grid, x: number, y: number): boolean {
+  if (!isInside(x, y)) return false;
+  const c = grid.cells[y][x];
+  return c === 'empty' || c === 'ship';
+}
 
-export function hardMode(grid: Cell[][], ai: AIOpponent): Position {
-  const size = grid.length;
-  if (ai.targets.length > 0) { while (ai.targets.length > 0) { const target = ai.targets.shift()!; if (isAvailable(grid, target.x, target.y)) return target; } }
-  if (ai.lastHit && ai.state !== AIState.SEARCH) {
-    const directions = [{ x: 0, y: -1 }, { x: 0, y: 1 }, { x: -1, y: 0 }, { x: 1, y: 0 }];
-    if (ai.hitDirection) { const next = { x: ai.lastHit.x + ai.hitDirection.x, y: ai.lastHit.y + ai.hitDirection.y }; if (isAvailable(grid, next.x, next.y)) return next; if (ai.state === AIState.DESTROY && ai.lastHit) { const oppDir = { x: -ai.hitDirection.x, y: -ai.hitDirection.y }; let startX = ai.lastHit.x, startY = ai.lastHit.y; while (true) { const prevX = startX - ai.hitDirection.x, prevY = startY - ai.hitDirection.y; if (prevX < 0 || prevX >= size || prevY < 0 || prevY >= size || grid[prevY][prevX].state !== CellState.HIT) break; startX = prevX; startY = prevY; } const checkX = startX + oppDir.x, checkY = startY + oppDir.y; if (isAvailable(grid, checkX, checkY)) { ai.hitDirection = oppDir; return { x: checkX, y: checkY }; } } ai.state = AIState.SEARCH; ai.lastHit = null; ai.hitDirection = null; }
-    const lastHitPos = ai.lastHit; if (!lastHitPos) return { x: 0, y: 0 }; for (const dir of directions) { const next = { x: lastHitPos.x + dir.x, y: lastHitPos.y + dir.y }; if (isAvailable(grid, next.x, next.y)) ai.targets.push(next); } if (ai.targets.length > 0) return ai.targets.shift()!; ai.state = AIState.SEARCH; ai.lastHit = null; ai.hitDirection = null;
+// ─── easy AI ───
+
+export function easyAI(grid: Grid): Cursor {
+  const free: Cursor[] = [];
+  for (let y = 0; y < GRID_SIZE; y++) {
+    for (let x = 0; x < GRID_SIZE; x++) {
+      if (isFreeForShot(grid, x, y)) free.push({ x, y });
+    }
   }
-  const avail = getAvailableCells(grid); const checkerboard = avail.filter(p => (p.x + p.y) % 2 === 0); if (checkerboard.length > 0) return checkerboard[Math.floor(Math.random() * checkerboard.length)]; if (avail.length > 0) return avail[Math.floor(Math.random() * avail.length)]; return { x: 0, y: 0 };
+  if (free.length === 0) return { x: 0, y: 0 };
+  return free[Math.floor(Math.random() * free.length)];
 }
 
-export function updateAIAfterShot(ai: AIOpponent, pos: Position, isHit: boolean, isSunk: boolean, grid: Cell[][]): AIOpponent {
-  const newAi: AIOpponent = { difficulty: ai.difficulty, state: ai.state, lastHit: ai.lastHit, hitDirection: ai.hitDirection, targets: [...ai.targets] }; const size = grid.length;
-  if (isSunk) { newAi.state = AIState.SEARCH; newAi.lastHit = null; newAi.hitDirection = null; newAi.targets = []; }
-  else if (isHit) { if (newAi.state === AIState.SEARCH) { newAi.state = AIState.TARGET; newAi.lastHit = { ...pos }; newAi.hitDirection = null; for (const dir of [{ x: 0, y: -1 }, { x: 0, y: 1 }, { x: -1, y: 0 }, { x: 1, y: 0 }]) { const next = { x: pos.x + dir.x, y: pos.y + dir.y }; if (isAvailable(grid, next.x, next.y)) newAi.targets.push(next); } } else if (newAi.state === AIState.TARGET && newAi.lastHit) { newAi.hitDirection = { x: pos.x - newAi.lastHit.x, y: pos.y - newAi.lastHit.y }; newAi.state = AIState.DESTROY; newAi.lastHit = { ...pos }; if (newAi.hitDirection) { const next = { x: pos.x + newAi.hitDirection.x, y: pos.y + newAi.hitDirection.y }; if (isAvailable(grid, next.x, next.y)) newAi.targets.push(next); } } else if (newAi.state === AIState.DESTROY) { newAi.lastHit = { ...pos }; if (newAi.hitDirection) { const next = { x: pos.x + newAi.hitDirection.x, y: pos.y + newAi.hitDirection.y }; if (isAvailable(grid, next.x, next.y)) newAi.targets = [next]; else newAi.targets = []; } } }
-  else { if (newAi.state === AIState.DESTROY && newAi.hitDirection && newAi.lastHit) { const oppDir = { x: -newAi.hitDirection.x, y: -newAi.hitDirection.y }; let startX = newAi.lastHit.x, startY = newAi.lastHit.y; while (true) { const prevX = startX - newAi.hitDirection!.x, prevY = startY - newAi.hitDirection!.y; if (prevX < 0 || prevX >= size || prevY < 0 || prevY >= size || grid[prevY][prevX].state !== CellState.HIT) break; startX = prevX; startY = prevY; } const checkX = startX + oppDir.x, checkY = startY + oppDir.y; if (isAvailable(grid, checkX, checkY)) { newAi.hitDirection = oppDir; newAi.targets = [{ x: checkX, y: checkY }]; } else newAi.targets = []; } }
-  return newAi;
+// ─── hard AI (checkerboard + hunt & destroy) ───
+
+export interface HardAIState {
+  mode: 'search' | 'hunt' | 'destroy';
+  lastHit: Cursor | null;
+  direction: number; // 0=up,1=right,2=down,3=left
+  directionsTried: boolean[];
+  origin: Cursor | null;
 }
 
-export function placeAIShips(grid: Cell[][], shipSizes: number[]): { grid: Cell[][]; ships: Ship[] } { return placeShipsOnGrid(grid, shipSizes, 0); }
-export function autoPlacePlayerShips(grid: Cell[][], shipSizes: number[], startShipId: number): { grid: Cell[][]; ships: Ship[] } { return placeShipsOnGrid(grid, shipSizes, startShipId); }
-
-function placeShipsOnGrid(grid: Cell[][], shipSizes: number[], startShipId: number): { grid: Cell[][]; ships: Ship[] } {
-  const newGrid = grid.map(r => r.map(c => ({ ...c }))); const ships: Ship[] = []; let shipId = startShipId;
-  for (const size of shipSizes) { let placed = false, attempts = 0; while (!placed && attempts < 1000) { attempts++; const orientation = Math.random() < 0.5 ? 'HORIZONTAL' : 'VERTICAL'; const maxX = orientation === 'HORIZONTAL' ? 10 - size : 10, maxY = orientation === 'VERTICAL' ? 10 - size : 10; const x = Math.floor(Math.random() * maxX), y = Math.floor(Math.random() * maxY); let valid = true; const positions: Position[] = []; for (let i = 0; i < size; i++) { const px = orientation === 'HORIZONTAL' ? x + i : x, py = orientation === 'VERTICAL' ? y + i : y; if (px < 0 || px >= 10 || py < 0 || py >= 10) { valid = false; break; } for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++) { const nx = px + dx, ny = py + dy; if (nx >= 0 && nx < 10 && ny >= 0 && ny < 10 && newGrid[ny][nx].state === CellState.SHIP) { valid = false; break; } } if (!valid) break; positions.push({ x: px, y: py }); } if (valid && positions.length === size) { for (const pos of positions) newGrid[pos.y][pos.x] = { state: CellState.SHIP, shipId }; ships.push({ id: shipId, size, positions, hits: [], orientation: orientation as import('./types').Orientation, isSunk: false }); shipId++; placed = true; } } }
-  return { grid: newGrid, ships };
+export function createHardAIState(): HardAIState {
+  return { mode: 'search', lastHit: null, direction: 0, directionsTried: [false, false, false, false], origin: null };
 }
+
+const DIR_DX = [0, 1, 0, -1];
+const DIR_DY = [-1, 0, 1, 0];
+
+function getCheckerboardCells(grid: Grid): Cursor[] {
+  const result: Cursor[] = [];
+  for (let y = 0; y < GRID_SIZE; y++) {
+    for (let x = 0; x < GRID_SIZE; x++) {
+      if ((x + y) % 2 === 0 && isFreeForShot(grid, x, y)) result.push({ x, y });
+    }
+  }
+  return result;
+}
+
+export function hardAI(grid: Grid, state: HardAIState): { cursor: Cursor; state: HardAIState } {
+  let s = { ...state };
+
+  // Try current line in destroy mode
+  if (s.mode === 'destroy' && s.lastHit) {
+    const nx = s.lastHit.x + DIR_DX[s.direction];
+    const ny = s.lastHit.y + DIR_DY[s.direction];
+    if (isInside(nx, ny) && isFreeForShot(grid, nx, ny)) {
+      return { cursor: { x: nx, y: ny }, state: s };
+    }
+    // Line blocked, try opposite direction from origin
+    if (s.origin) {
+      const oppDir = (s.direction + 2) % 4;
+      s.direction = oppDir;
+      s.lastHit = { ...s.origin };
+      const ox = s.origin.x + DIR_DX[oppDir];
+      const oy = s.origin.y + DIR_DY[oppDir];
+      if (isInside(ox, oy) && isFreeForShot(grid, ox, oy)) {
+        return { cursor: { x: ox, y: oy }, state: s };
+      }
+    }
+    // Both directions exhausted
+    s.mode = 'search';
+    s.lastHit = null;
+    s.origin = null;
+    s.directionsTried = [false, false, false, false];
+  }
+
+  // Hunt mode: try adjacent cells
+  if (s.mode === 'hunt' && s.lastHit) {
+    for (let d = 0; d < 4; d++) {
+      if (s.directionsTried[d]) continue;
+      const nx = s.lastHit.x + DIR_DX[d];
+      const ny = s.lastHit.y + DIR_DY[d];
+      if (isInside(nx, ny) && isFreeForShot(grid, nx, ny)) {
+        s.direction = d;
+        s.directionsTried[d] = true;
+        return { cursor: { x: nx, y: ny }, state: s };
+      }
+      s.directionsTried[d] = true;
+    }
+    // All directions exhausted
+    s.mode = 'search';
+    s.lastHit = null;
+    s.origin = null;
+    s.directionsTried = [false, false, false, false];
+  }
+
+  // Search mode: checkerboard pattern
+  const checkerboard = getCheckerboardCells(grid);
+  if (checkerboard.length > 0) {
+    return { cursor: checkerboard[Math.floor(Math.random() * checkerboard.length)], state: s };
+  }
+  // Fallback: any free cell
+  const free: Cursor[] = [];
+  for (let y = 0; y < GRID_SIZE; y++) for (let x = 0; x < GRID_SIZE; x++) if (isFreeForShot(grid, x, y)) free.push({ x, y });
+  if (free.length > 0) return { cursor: free[Math.floor(Math.random() * free.length)], state: s };
+  return { cursor: { x: 0, y: 0 }, state: s };
+}
+
+export function updateHardAI(state: HardAIState, hit: boolean, sunk: boolean): HardAIState {
+  const s = { ...state };
+  if (sunk) {
+    s.mode = 'search';
+    s.lastHit = null;
+    s.origin = null;
+    s.directionsTried = [false, false, false, false];
+  } else if (hit) {
+    if (s.mode === 'search') {
+      s.mode = 'hunt';
+      s.origin = s.lastHit ? { ...s.lastHit } : null;
+      s.directionsTried = [false, false, false, false];
+    } else if (s.mode === 'hunt') {
+      s.mode = 'destroy';
+    }
+    // Update lastHit after the shot lands
+  }
+  return s;
+}
+
+export { createEmptyGrid, canPlaceShip, placeShip, autoPlaceShips, fireAt, markAura, isAllShipsSunk, getFleetStatus, cloneGrid, isInside };
