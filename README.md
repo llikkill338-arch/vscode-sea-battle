@@ -1,69 +1,88 @@
 # VS Code Web Replica + Pirate Sea Battle
 
-Interactive web replica of Visual Studio Code with a fully playable **Pirate Sea Battle** (Морской Бой) game running in the integrated terminal.
+Interactive web replica of Visual Studio Code featuring a standalone Pirate Sea Battle game launcher.
 
-## Live Demo
+## 🎮 Live Demo
 
-[https://7dzmycyb7vhl2.kimi.page](https://7dzmycyb7vhl2.kimi.page)
+**VS Code Replica:** [https://7dzmycyb7vhl2.kimi.page](https://7dzmycyb7vhl2.kimi.page)
 
-## Features
+**Standalone Game:** [https://7dzmycyb7vhl2.kimi.page](https://7dzmycyb7vhl2.kimi.page) (click "Launch Game" in terminal)
 
-### VS Code Interface
-- **Activity Bar** — Explorer, Search, Source Control, Debug, Extensions icons
-- **File Explorer** — Full C++ project tree with file icons, search filter, Open Editors
-- **Git Panel** — 8+ commits, diff viewer, staged/unstaged changes
-- **Search Panel** — Find-in-files with match highlighting
-- **Code Editor** — Minimap, breadcrumbs, C++ syntax highlighting, line numbers
-- **Command Palette** — Ctrl+Shift+P with 8+ commands
-- **Status Bar** — Branch, cursor position, UTF-8, C++ mode
+## 🏴‍☠️ Standalone Game Features
 
-### Pirate Sea Battle Game
-- **4 Game Phases**: Title -> Difficulty Select -> Setup -> Battle -> Game Over
-- **Pirate Theme** — Russian text, pirate phrases, retro 80s neon aesthetic
-- **Difficulty Selection** — Easy (random) / Hard (smart AI with hunt/destroy)
-- **Fleet**: 1x4 Линкор, 2x3 Крейсер, 3x2 Эсминец, 4x1 Торпедный катер
-- **Aura Marking** — Auto-mark surrounding cells when ship sunk (ореол)
-- **Random First Turn** — 50/50 coin flip
-- **Fleet Status Panel** — Live ship status for both sides
-- **Auto-Placement** — Press 'R' for instant ship placement
-- **Russian Grid Labels** — А, Б, В, Г, Д, Е, Ж, З, И, К
-- **CRT Effects** — Scanlines, vignette, flicker, neon glow
-- **Animations** — Hit explosions, miss ripples, sink flashes, text bursts
+### 4 Main Menu Items
+1. **⚔ Бой с ботом** — Battle against AI bot
+   - Choose difficulty: Easy (random) / Hard (smart hunt/destroy AI)
+   - Choose placement: Auto / Manual
+   - Navigate with ↑↓, change with ←→, Enter to start
+2. **👥 1 на 1** — Two players on one PC
+   - Players take turns placing ships
+   - 3-second timer between turns
+   - Battle with turn switching
+3. **⚙ Настройки** — Game info & controls
+4. **🚪 Выход** — Exit game
 
-## Tech Stack
+### Game Mechanics
+- **10×10 grid** with Russian labels А-К (no Й)
+- **Fleet:** 1×4 Линкор, 2×3 Крейсер, 3×2 Эсминец, 4×1 Торпедный катер
+- **Aura marking** (autovycherkivanie): surrounding cells auto-marked as miss
+- **Random first turn** (50/50)
+- **Pirate phrases** for hit/miss/sunk/victory/defeat
+- **CRT effects:** scanlines, vignette, flicker
+- **Neon glow** on all interactive elements
 
-- React 19 + TypeScript
-- Vite 7
-- Tailwind CSS 3.4
-- HTML5 Canvas 2D (game rendering)
-- shadcn/ui components
+## 🖥️ VS Code Interface
 
-## Game Controls
+- **Activity Bar** — Explorer, Search, Source Control, Debug, Extensions
+- **File Explorer** — Full C++ project tree with file icons
+- **Git Panel** — 9 commits, diff viewer, staged/unstaged changes
+- **Code Editor** — Minimap, breadcrumbs, C++ syntax highlighting
+- **Command Palette** — Ctrl+Shift+P
+- **Terminal** — Launch button for standalone game
+
+## 🛠️ Tech Stack
+
+| Component | Technology |
+|-----------|-----------|
+| VS Code UI | React 19 + TypeScript + Tailwind CSS + shadcn/ui |
+| Standalone Game | Vanilla TypeScript + HTML5 Canvas 2D |
+| Build Tool | Vite |
+| Fonts | Press Start 2P, VT323, JetBrains Mono |
+
+## 📁 Project Structure
+
+```
+VS Code Replica/
+├── src/components/     # VS Code UI components
+│   ├── VSCodeShell.tsx
+│   ├── Editor.tsx      # Code editor + minimap
+│   ├── Terminal.tsx    # Game launcher
+│   ├── GitPanel.tsx
+│   └── ...
+├── src/game/           # In-VS-Code game engine
+└── ...
+
+Standalone Game/
+├── src/
+│   ├── types.ts        # Game types & constants
+│   ├── ai.ts           # Bot AI (easy + hard)
+│   ├── game.ts         # State machine
+│   ├── renderer.ts     # Canvas 2D rendering
+│   ├── input.ts        # Keyboard handler
+│   └── main.ts         # Entry point
+└── index.html
+```
+
+## 🎮 Controls
 
 | Key | Action |
 |-----|--------|
-| `Arrow Keys` | Move cursor / aim |
-| `Space` | Rotate ship (setup) |
-| `Enter` | Fire / Place ship / Select |
+| `↑` `↓` | Navigate menu / move cursor |
+| `←` `→` | Change option value |
+| `Enter` | Confirm / fire |
+| `Space` | Rotate ship |
 | `R` | Auto-place ships |
 
-## Architecture
-
-```
-src/
- components/       # VS Code UI components
- game/            # Sea Battle game engine (separate from UI)
-  types.ts        # Game types, pirate phrases, colors
-  SeaBattleGame.ts # Core game logic + state machine
-  renderer.ts     # Canvas 2D rendering
-  ai.ts           # Bot AI (easy + hard)
- lib/
-  cppHighlighter.ts # C++ syntax highlighting
-  fileContents.ts   # C++ source code for editor
- context/
-  VSCodeContext.tsx # Global state management
-```
-
-## License
+## 📜 License
 
 MIT
