@@ -1,40 +1,599 @@
 // ============================================================
-// Sea Battle Canvas Renderer — Pirate Edition v2.0
+// Pirate Sea Battle — Canvas 2D Renderer (ALL screens)
 // ============================================================
 
-import { type Cell, type Position, type Animation, type LogMessage, type FleetStatus, CellState, Orientation, AnimationType, AIDifficulty, COLORS, DEFAULT_CONFIG, COLUMN_LABELS, SHIP_NAMES, getRandomPhrase } from './types';
+import {
+  COLORS, GRID_SIZE, COL_LABELS, type Grid, type Cursor,
+  type FleetStatus, type Message, getCellSymbol,
+} from './types';
 
-function drawScanlines(ctx: CanvasRenderingContext2D, w: number, h: number): void { ctx.fillStyle = COLORS.scanline; for (let y = 0; y < h; y += 2) ctx.fillRect(0, y, w, 1); }
-function drawVignette(ctx: CanvasRenderingContext2D, w: number, h: number): void { const g = ctx.createRadialGradient(w / 2, h / 2, w * 0.3, w / 2, h / 2, w * 0.8); g.addColorStop(0, 'rgba(0,0,0,0)'); g.addColorStop(1, 'rgba(0,0,0,0.45)'); ctx.fillStyle = g; ctx.fillRect(0, 0, w, h); }
-function drawFlicker(ctx: CanvasRenderingContext2D, w: number, h: number, time: number): void { const f = Math.sin(time * 47.3) * 0.012 + Math.cos(time * 31.7) * 0.008; ctx.fillStyle = `rgba(0,0,0,${Math.abs(f)})`; ctx.fillRect(0, 0, w, h); }
-function drawFlickerLine(ctx: CanvasRenderingContext2D, w: number, h: number, time: number): void { if (Math.sin(time * 13.7) > 0.97) { ctx.fillStyle = 'rgba(255,255,255,0.04)'; ctx.fillRect(0, Math.floor(Math.random() * h), w, 2); } }
+// ── CRT Effects ──────────────────────────────────────────────
 
-function gridToPixel(gx: number, gy: number, ox: number, oy: number, cs: number, cg: number): { px: number; py: number } { return { px: ox + gx * (cs + cg), py: oy + gy * (cs + cg) }; }
-
-function drawCell(ctx: CanvasRenderingContext2D, x: number, y: number, cs: number, state: CellState, isEnemy: boolean, isCursor: boolean, cv: boolean, time: number): void {
-  const cx = x + cs / 2, cy = y + cs / 2; ctx.fillStyle = 'rgba(0,15,25,0.7)'; ctx.fillRect(x, y, cs, cs); ctx.strokeStyle = COLORS.gridLine; ctx.lineWidth = 0.5; ctx.strokeRect(x, y, cs, cs);
-  switch (state) { case CellState.EMPTY: { const wp = 0.4 + Math.sin(time * 2.5 + x * 0.15 + y * 0.12) * 0.25; ctx.fillStyle = `rgba(0,200,255,${wp * 0.18})`; ctx.font = `${cs * 0.55}px monospace`; ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; ctx.fillText('~', cx, cy); break; } case CellState.SHIP: if (!isEnemy) { ctx.fillStyle = 'rgba(0,255,65,0.22)'; ctx.fillRect(x + 1, y + 1, cs - 2, cs - 2); ctx.fillStyle = COLORS.playerShip; ctx.font = `${cs * 0.55}px monospace`; ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; ctx.shadowColor = COLORS.playerShip; ctx.shadowBlur = 8; ctx.fillText('\u25A0', cx, cy); ctx.shadowBlur = 0; } else { const wp = 0.4 + Math.sin(time * 2.5 + x * 0.15 + y * 0.12) * 0.25; ctx.fillStyle = `rgba(0,200,255,${wp * 0.18})`; ctx.font = `${cs * 0.55}px monospace`; ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; ctx.fillText('~', cx, cy); } break; case CellState.HIT: { ctx.fillStyle = 'rgba(255,0,64,0.18)'; ctx.fillRect(x + 1, y + 1, cs - 2, cs - 2); ctx.fillStyle = COLORS.hit; ctx.font = `bold ${cs * 0.6}px monospace`; ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; ctx.shadowColor = COLORS.hit; ctx.shadowBlur = 10; ctx.fillText('\u2716', cx, cy); ctx.shadowBlur = 0; break; } case CellState.MISS: ctx.fillStyle = COLORS.miss; ctx.beginPath(); ctx.arc(cx, cy, cs * 0.1, 0, Math.PI * 2); ctx.fill(); break; case CellState.SUNK: { ctx.fillStyle = 'rgba(255,102,0,0.3)'; ctx.fillRect(x + 1, y + 1, cs - 2, cs - 2); ctx.fillStyle = COLORS.sunk; ctx.font = `${cs * 0.55}px monospace`; ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; ctx.shadowColor = COLORS.sunk; ctx.shadowBlur = 8; ctx.fillText('#', cx, cy); ctx.shadowBlur = 0; break; } }
-  if (isCursor && cv) { ctx.strokeStyle = COLORS.cursor; ctx.lineWidth = 2; ctx.shadowColor = COLORS.cursor; ctx.shadowBlur = 12; ctx.strokeRect(x + 1, y + 1, cs - 2, cs - 2); ctx.fillStyle = COLORS.cursor; ctx.font = `bold ${cs * 0.45}px monospace`; ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; ctx.fillText('+', cx, cy); ctx.shadowBlur = 0; }
+function applyCRTEffects(ctx: CanvasRenderingContext2D, w: number, h: number, time: number): void {
+  // Scanlines
+  ctx.fillStyle = COLORS.scanline;
+  for (let y = 0; y < h; y += 2) {
+    ctx.fillRect(0, y, w, 1);
+  }
+  // Vignette
+  const gradient = ctx.createRadialGradient(w / 2, h / 2, w * 0.25, w / 2, h / 2, w * 0.85);
+  gradient.addColorStop(0, 'rgba(0,0,0,0)');
+  gradient.addColorStop(1, 'rgba(0,0,0,0.55)');
+  ctx.fillStyle = gradient;
+  ctx.fillRect(0, 0, w, h);
+  // Subtle flicker
+  ctx.fillStyle = `rgba(0,255,65,${0.01 + Math.sin(time * 12) * 0.005})`;
+  ctx.fillRect(0, 0, w, h);
 }
 
-function drawGridLabels(ctx: CanvasRenderingContext2D, ox: number, oy: number, cs: number, cg: number): void { ctx.fillStyle = COLORS.label; ctx.font = `bold 12px 'VT323',monospace`; ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; ctx.shadowColor = COLORS.label; ctx.shadowBlur = 4; for (let i = 0; i < 10; i++) { const { px } = gridToPixel(i, 0, ox, oy, cs, cg); ctx.fillText(COLUMN_LABELS[i], px + cs / 2, oy - 14); } for (let i = 0; i < 10; i++) { const { py } = gridToPixel(0, i, ox, oy, cs, cg); ctx.fillText(String(i + 1), ox - 16, py + cs / 2); } ctx.shadowBlur = 0; }
+// ── Shared helpers ───────────────────────────────────────────
 
-function drawGrid(ctx: CanvasRenderingContext2D, grid: Cell[][], ox: number, oy: number, cs: number, cg: number, cp: Position | null, cv: boolean, ie: boolean, time: number, anims: Animation[]): void { const size = grid.length; for (let r = 0; r < size; r++) for (let c = 0; c < size; c++) { const { px, py } = gridToPixel(c, r, ox, oy, cs, cg); drawCell(ctx, px, py, cs, grid[r][c].state, ie, cp !== null && cp.x === c && cp.y === r, cv, time); } for (const a of anims) drawAnimation(ctx, a, ox, oy, cs, cg, time); }
+function drawPixelText(ctx: CanvasRenderingContext2D, text: string, x: number, y: number, size: number, color: string, align: CanvasTextAlign = 'left'): void {
+  ctx.font = `${size}px 'Press Start 2P', monospace`;
+  ctx.textAlign = align;
+  ctx.fillStyle = color;
+  ctx.fillText(text, x, y);
+}
 
-function drawGhostShip(ctx: CanvasRenderingContext2D, cx: number, cy: number, ss: number, o: Orientation, iv: boolean, ox: number, oy: number, cs: number, cg: number): void { const gc = iv ? COLORS.playerShip : COLORS.hit; ctx.shadowColor = gc; ctx.shadowBlur = 12; for (let i = 0; i < ss; i++) { const gx = o === Orientation.HORIZONTAL ? cx + i : cx, gy = o === Orientation.VERTICAL ? cy + i : cy; const { px, py } = gridToPixel(gx, gy, ox, oy, cs, cg); ctx.fillStyle = iv ? 'rgba(0,255,65,0.35)' : 'rgba(255,0,64,0.35)'; ctx.fillRect(px + 1, py + 1, cs - 2, cs - 2); ctx.strokeStyle = gc; ctx.lineWidth = 1.5; ctx.strokeRect(px + 2, py + 2, cs - 4, cs - 4); } ctx.shadowBlur = 0; }
+function drawUIText(ctx: CanvasRenderingContext2D, text: string, x: number, y: number, size: number, color: string, align: CanvasTextAlign = 'left'): void {
+  ctx.font = `${size}px 'VT323', monospace`;
+  ctx.textAlign = align;
+  ctx.fillStyle = color;
+  ctx.fillText(text, x, y);
+}
 
-function drawAnimation(ctx: CanvasRenderingContext2D, a: Animation, ox: number, oy: number, cs: number, cg: number, _t: number): void { const { px, py } = gridToPixel(a.x % 10, a.y, ox, oy, cs, cg); const cx = px + cs / 2, cy = py + cs / 2, p = a.frame / a.maxFrames; switch (a.type) { case AnimationType.HIT_EXPLOSION: ctx.fillStyle = `rgba(255,255,0,${(1 - p) * 0.5})`; ctx.fillRect(px - 3, py - 3, cs + 6, cs + 6); ctx.strokeStyle = `rgba(255,0,64,${1 - p * 0.7})`; ctx.lineWidth = 2.5; ctx.beginPath(); ctx.arc(cx, cy, p * cs * 1.2, 0, Math.PI * 2); ctx.stroke(); ctx.strokeStyle = `rgba(255,100,0,${(1 - p) * 0.4})`; ctx.lineWidth = 1; ctx.beginPath(); ctx.arc(cx, cy, p * cs * 0.7, 0, Math.PI * 2); ctx.stroke(); break; case AnimationType.MISS_RIPPLE: ctx.strokeStyle = `rgba(100,100,120,${1 - p})`; ctx.lineWidth = 1.5; ctx.beginPath(); ctx.arc(cx, cy, p * cs * 0.8, 0, Math.PI * 2); ctx.stroke(); break; case AnimationType.SINK_FLASH: ctx.fillStyle = `rgba(255,150,0,${Math.sin(p * Math.PI * 4) * 0.3 + 0.15})`; ctx.fillRect(px - 1, py - 1, cs + 2, cs + 2); break; case AnimationType.TEXT_BURST: if (a.text && a.color) { ctx.save(); ctx.translate(cx, cy - p * 25); ctx.scale(1 + p * 0.3, 1 + p * 0.3); ctx.globalAlpha = 1 - p; ctx.fillStyle = a.color; ctx.font = `bold 15px 'VT323',monospace`; ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; ctx.shadowColor = a.color; ctx.shadowBlur = 10; ctx.fillText(a.text, 0, 0); ctx.shadowBlur = 0; ctx.globalAlpha = 1; ctx.restore(); } break; } }
+function drawPirateFrame(ctx: CanvasRenderingContext2D, x: number, y: number, w: number, h: number): void {
+  ctx.strokeStyle = COLORS.gold;
+  ctx.lineWidth = 2;
+  ctx.strokeRect(x, y, w, h);
+  // Corner ornaments
+  const c = 8;
+  ctx.fillStyle = COLORS.gold;
+  ctx.fillRect(x, y, c, 2);
+  ctx.fillRect(x, y, 2, c);
+  ctx.fillRect(x + w - c, y, c, 2);
+  ctx.fillRect(x + w - 2, y, 2, c);
+  ctx.fillRect(x, y + h - 2, c, 2);
+  ctx.fillRect(x, y + h - c, 2, c);
+  ctx.fillRect(x + w - c, y + h - 2, c, 2);
+  ctx.fillRect(x + w - 2, y + h - c, 2, c);
+}
 
-function drawFleetPanel(ctx: CanvasRenderingContext2D, x: number, y: number, w: number, fleet: FleetStatus, isEnemy: boolean, time: number): void { const lh = 18; ctx.fillStyle = 'rgba(10,15,20,0.85)'; ctx.fillRect(x, y, w, fleet.ships.length * lh + 30); ctx.strokeStyle = COLORS.gridLine; ctx.lineWidth = 1; ctx.strokeRect(x, y, w, fleet.ships.length * lh + 30); ctx.font = `bold 12px 'VT323',monospace`; ctx.fillStyle = isEnemy ? COLORS.hit : COLORS.playerShip; ctx.textAlign = 'left'; ctx.shadowColor = isEnemy ? COLORS.hit : COLORS.playerShip; ctx.shadowBlur = 4; ctx.fillText(isEnemy ? '\u2620 ВРАЖЕСКИЙ ФЛОТ' : '\u2693 НАШ ФЛОТ', x + 8, y + 16); ctx.shadowBlur = 0; for (let i = 0; i < fleet.ships.length; i++) { const ship = fleet.ships[i], sy = y + 28 + i * lh; ctx.font = `11px 'VT323',monospace`; ctx.fillStyle = ship.isSunk ? '#555' : COLORS.text; ctx.fillText(ship.name, x + 8, sy); ctx.fillStyle = 'rgba(50,50,60,0.6)'; ctx.fillRect(x + 80, sy - 6, w - 96, 8); if (ship.isSunk) { ctx.fillStyle = 'rgba(255,0,40,0.6)'; ctx.fillRect(x + 80, sy - 6, w - 96, 8); } else { const pulse = 0.8 + Math.sin(time * 3 + i) * 0.2; ctx.fillStyle = isEnemy ? `rgba(255,0,64,${pulse * 0.6})` : `rgba(0,255,65,${pulse * 0.6})`; ctx.fillRect(x + 80, sy - 6, w - 96, 8); } ctx.fillStyle = ship.isSunk ? '#444' : COLORS.text; ctx.font = `10px 'VT323',monospace`; ctx.textAlign = 'right'; ctx.fillText(ship.isSunk ? '\u2717' : '\u2713', x + w - 8, sy); } ctx.font = `11px 'VT323',monospace`; ctx.fillStyle = COLORS.gold; ctx.textAlign = 'center'; ctx.fillText(`${fleet.sunkShips}/${fleet.totalShips} потоплено`, x + w / 2, y + 28 + fleet.ships.length * lh + 4); }
+// ── LOADING ──────────────────────────────────────────────────
 
-function drawMessageLog(ctx: CanvasRenderingContext2D, h: number, messages: LogMessage[]): void { const ly = h - 62, mm = 4, recent = messages.slice(-mm); ctx.fillStyle = 'rgba(0,5,10,0.7)'; ctx.fillRect(8, ly - 4, 500, mm * 15 + 8); ctx.font = `13px 'VT323',monospace`; ctx.textAlign = 'left'; for (let i = 0; i < recent.length; i++) { const m = recent[i]; ctx.fillStyle = m.color; ctx.shadowColor = m.color; ctx.shadowBlur = 3; ctx.fillText(`> ${m.text}`, 14, ly + i * 15); } ctx.shadowBlur = 0; }
+export function drawLoading(ctx: CanvasRenderingContext2D, w: number, h: number, time: number, progress: number): void {
+  ctx.fillStyle = COLORS.bg;
+  ctx.fillRect(0, 0, w, h);
 
-export function drawTitleScreen(ctx: CanvasRenderingContext2D, w: number, h: number, time: number, bv: boolean): void { ctx.fillStyle = COLORS.background; ctx.fillRect(0, 0, w, h); drawScanlines(ctx, w, h); drawVignette(ctx, w, h); drawFlicker(ctx, w, h, time); drawFlickerLine(ctx, w, h, time); const tg = 10 + Math.sin(time * 3) * 6, ts = Math.min(26, w / 18); ctx.font = `24px monospace`; ctx.fillStyle = COLORS.gold; ctx.textAlign = 'center'; ctx.shadowColor = COLORS.gold; ctx.shadowBlur = 6; ctx.fillText('\u2693', w * 0.15, h * 0.25); ctx.fillText('\u2693', w * 0.85, h * 0.25); ctx.shadowBlur = 0; ctx.font = `${ts}px 'Press Start 2P',monospace`; ctx.fillStyle = COLORS.title; ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; ctx.shadowColor = COLORS.title; ctx.shadowBlur = tg; ctx.fillText('\u041F\u0418\u0420\u0410\u0422\u0421\u041A\u0418\u0419', w / 2, h * 0.28); ctx.fillText('\u041C\u041E\u0420\u0421\u041A\u041E\u0419 \u0411\u041E\u0419', w / 2, h * 0.40); ctx.shadowBlur = 0; ctx.font = `${Math.min(16, w / 24)}px 'Press Start 2P',monospace`; ctx.fillStyle = COLORS.water; ctx.shadowColor = COLORS.water; ctx.shadowBlur = 6; ctx.fillText('SEA BATTLE', w / 2, h * 0.52); ctx.shadowBlur = 0; ctx.strokeStyle = COLORS.gridLine; ctx.lineWidth = 1; ctx.beginPath(); ctx.moveTo(w * 0.2, h * 0.58); ctx.lineTo(w * 0.8, h * 0.58); ctx.stroke(); ctx.font = `18px monospace`; ctx.fillStyle = 'rgba(0,255,200,0.3)'; ctx.fillText('~ ~ ~ \u2666 ~ ~ ~', w / 2, h * 0.63); ctx.font = `16px 'VT323',monospace`; ctx.fillStyle = COLORS.playerShip; ctx.shadowColor = COLORS.playerShip; ctx.shadowBlur = 4; ctx.fillText('\\_/)\u2500\u2500\u25A0\u25A0\u25A0\u25A0\u2500\u25B6', w / 2, h * 0.70); ctx.shadowBlur = 0; ctx.font = `13px 'VT323',monospace`; ctx.fillStyle = '#666'; ctx.textAlign = 'center'; ctx.fillText('\u0410\u0440\u0433\u0443\u043C\u0435\u043D\u0442\u044B: \u0414\u0432\u0438\u0436\u0435\u043D\u0438\u0435 | \u041F\u0440\u043E\u0431\u0435\u043B: \u041F\u043E\u0432\u043E\u0440\u043E\u0442 | Enter: \u041E\u0433\u043E\u043D\u044C!', w / 2, h * 0.78); if (bv) { const es = Math.min(18, w / 28); ctx.font = `${es}px 'VT323',monospace`; ctx.fillStyle = COLORS.cursor; ctx.shadowColor = COLORS.cursor; ctx.shadowBlur = 10; ctx.fillText('> \u041D\u0410\u0416\u041C\u0418 ENTER \u0414\u041B\u042F \u0421\u0422\u0410\u0420\u0422\u0410 <', w / 2, h * 0.88); ctx.shadowBlur = 0; } }
+  const cx = w / 2;
+  const cy = h / 2;
 
-export function drawDifficultyScreen(ctx: CanvasRenderingContext2D, w: number, h: number, time: number, cursor: number, bv: boolean): void { ctx.fillStyle = COLORS.background; ctx.fillRect(0, 0, w, h); drawScanlines(ctx, w, h); drawVignette(ctx, w, h); drawFlicker(ctx, w, h, time); const tg = 10 + Math.sin(time * 3) * 5; ctx.font = `${Math.min(22, w / 20)}px 'Press Start 2P',monospace`; ctx.fillStyle = COLORS.gold; ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; ctx.shadowColor = COLORS.gold; ctx.shadowBlur = tg; ctx.fillText('\u0412\u042B\u0411\u0415\u0420\u0418 \u0421\u041B\u041E\u0416\u041D\u041E\u0421\u0422\u042C', w / 2, h * 0.2); ctx.shadowBlur = 0; ctx.strokeStyle = COLORS.gridLine; ctx.lineWidth = 1; ctx.beginPath(); ctx.moveTo(w * 0.25, h * 0.30); ctx.lineTo(w * 0.75, h * 0.30); ctx.stroke(); const opts = [{ label: '\u041B\u0401\u0413\u041A\u0418\u0419', desc: '\u0411\u043E\u0442 \u0441\u0442\u0440\u0435\u043B\u044F\u0435\u0442 \u043D\u0430\u0443\u0433\u0430\u0434', color: '#55cc55' }, { label: '\u0421\u041B\u041E\u0416\u041D\u042B\u0419', desc: '\u0423\u043C\u043D\u044B\u0439 \u0431\u043E\u0442: \u043F\u043E\u0438\u0441\u043A + \u0434\u043E\u0431\u0438\u0432\u0430\u043D\u0438\u0435', color: '#ff4444' }]; for (let i = 0; i < opts.length; i++) { const opt = opts[i], sel = cursor === i, oy = h * (0.42 + i * 0.18); if (sel) { ctx.fillStyle = 'rgba(255,215,0,0.12)'; ctx.fillRect(w * 0.2, oy - 20, w * 0.6, 60); ctx.strokeStyle = COLORS.gold; ctx.lineWidth = 1.5; ctx.strokeRect(w * 0.2, oy - 20, w * 0.6, 60); } if (sel && bv) { ctx.font = `bold 20px 'VT323',monospace`; ctx.fillStyle = COLORS.cursor; ctx.textAlign = 'right'; ctx.fillText('>', w * 0.18, oy + 5); } ctx.font = `${Math.min(20, w / 22)}px 'Press Start 2P',monospace`; ctx.fillStyle = sel ? COLORS.gold : '#666'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; ctx.shadowColor = sel ? opt.color : 'transparent'; ctx.shadowBlur = sel ? 6 : 0; ctx.fillText(opt.label, w / 2, oy); ctx.shadowBlur = 0; ctx.font = `14px 'VT323',monospace`; ctx.fillStyle = sel ? '#aaa' : '#555'; ctx.fillText(opt.desc, w / 2, oy + 22); } ctx.font = `13px 'VT323',monospace`; ctx.fillStyle = '#555'; ctx.textAlign = 'center'; ctx.fillText('\u0412\u0432\u0435\u0440\u0445/\u0412\u043D\u0438\u0437: \u0432\u044B\u0431\u043E\u0440 | Enter: \u043F\u043E\u0434\u0442\u0432\u0435\u0440\u0434\u0438\u0442\u044C', w / 2, h * 0.88); }
+  drawPixelText(ctx, 'ЗАГРУЗКА', cx, cy - 40, 24, COLORS.gold, 'center');
 
-export function drawSetupScreen(ctx: CanvasRenderingContext2D, w: number, h: number, time: number, playerGrid: Cell[][], cursorPos: Position, cursorVisible: boolean, currentShipSize: number, orientation: Orientation, isValidPlacement: boolean, shipsPlaced: number, totalShips: number, placedShips: import('./types').Ship[]): void { ctx.fillStyle = COLORS.background; ctx.fillRect(0, 0, w, h); const cs = DEFAULT_CONFIG.cellSize, cg = DEFAULT_CONFIG.cellGap, tgs = 10 * (cs + cg) - cg; const gox = 20, goy = Math.floor((h - tgs) / 2); ctx.font = `bold 22px 'VT323',monospace`; ctx.fillStyle = COLORS.title; ctx.textAlign = 'left'; ctx.shadowColor = COLORS.title; ctx.shadowBlur = 8; ctx.fillText('\u2693 \u0420\u0410\u0421\u0421\u0422\u0410\u041D\u041E\u0412\u041A\u0410 \u0424\u041B\u041E\u0422\u0410', 20, 28); ctx.shadowBlur = 0; ctx.font = `15px 'VT323',monospace`; ctx.fillStyle = COLORS.water; ctx.fillText(`${shipsPlaced}/${totalShips} \u043A\u043E\u0440\u0430\u0431\u043B\u0435\u0439 \u0440\u0430\u0437\u043C\u0435\u0449\u0435\u043D\u043E`, 20, 50); if (shipsPlaced < totalShips) { const sn = SHIP_NAMES[currentShipSize] || '\u041A\u043E\u0440\u0430\u0431\u043B\u044C'; ctx.font = `14px 'VT323',monospace`; ctx.fillStyle = COLORS.gold; ctx.fillText(`\u0421\u043B\u0435\u0434\u0443\u044E\u0449\u0438\u0439: ${sn} (${currentShipSize} \u043F\u0430\u043B.) \u2014 ${orientation === Orientation.HORIZONTAL ? '\u0413\u043E\u0440\u0438\u0437\u043E\u043D\u0442.' : '\u0412\u0435\u0440\u0442\u0438\u043A.'}`, 20, 72); } drawGridLabels(ctx, gox, goy, cs, cg); drawGrid(ctx, playerGrid, gox, goy, cs, cg, cursorPos, cursorVisible, false, time, []); if (shipsPlaced < totalShips) drawGhostShip(ctx, cursorPos.x, cursorPos.y, currentShipSize, orientation, isValidPlacement, gox, goy, cs, cg); const px = gox + tgs + 30, py = 90; ctx.font = `bold 14px 'VT323',monospace`; ctx.fillStyle = COLORS.gold; ctx.textAlign = 'left'; ctx.fillText('\u0420\u0410\u0417\u041C\u0415\u0429\u0401\u041D\u041D\u042B\u0415:', px, py); for (let i = 0; i < placedShips.length; i++) { const ship = placedShips[i], name = SHIP_NAMES[ship.size] || '\u041A\u043E\u0440\u0430\u0431\u043B\u044C'; ctx.font = `13px 'VT323',monospace`; ctx.fillStyle = COLORS.playerShip; ctx.fillText(`\u2713 ${name}`, px, py + 20 + i * 18); } const ry = py + 20 + placedShips.length * 18 + 20; ctx.font = `bold 14px 'VT323',monospace`; ctx.fillStyle = COLORS.hit; ctx.fillText('\u041E\u0421\u0422\u0410\u041B\u041E\u0421\u042C:', px, ry); const stp = [{ size: 4, count: 1 }, { size: 3, count: 2 }, { size: 2, count: 3 }, { size: 1, count: 4 }]; let idx = 0; for (const tmpl of stp) { const placed = placedShips.filter(s => s.size === tmpl.size).length; const remaining = tmpl.count - placed; if (remaining > 0) { const name = SHIP_NAMES[tmpl.size] || '\u041A\u043E\u0440\u0430\u0431\u043B\u044C'; ctx.font = `13px 'VT323',monospace`; ctx.fillStyle = COLORS.amber; ctx.fillText(`\u25CB ${name} \u00D7${remaining}`, px, ry + 18 + idx * 18); idx++; } } ctx.font = `14px 'VT323',monospace`; ctx.fillStyle = '#666'; ctx.textAlign = 'left'; ctx.fillText('\u0410\u0440\u0433\u0443\u043C\u0435\u043D\u0442\u044B: \u0414\u0432\u0438\u0436\u0435\u043D\u0438\u0435 | \u041F\u0440\u043E\u0431\u0435\u043B: \u041F\u043E\u0432\u043E\u0440\u043E\u0442 | Enter: \u0423\u0441\u0442\u0430\u043D\u043E\u0432\u0438\u0442\u044C', 20, h - 40); ctx.fillStyle = COLORS.gold; ctx.fillText('R: \u0410\u0432\u0442\u043E-\u0440\u0430\u0441\u0441\u0442\u0430\u043D\u043E\u0432\u043A\u0430', 20, h - 20); drawScanlines(ctx, w, h); drawVignette(ctx, w, h); }
+  // Loading bar
+  const barW = 300;
+  const barH = 20;
+  const barX = cx - barW / 2;
+  const barY = cy + 10;
+  ctx.strokeStyle = COLORS.gridLine;
+  ctx.lineWidth = 1;
+  ctx.strokeRect(barX, barY, barW, barH);
+  ctx.fillStyle = COLORS.playerShip;
+  ctx.fillRect(barX + 2, barY + 2, (barW - 4) * progress, barH - 4);
 
-export function drawBattleScreen(ctx: CanvasRenderingContext2D, w: number, h: number, time: number, playerGrid: Cell[][], enemyGrid: Cell[][], playerCursor: Position | null, cursorVisible: boolean, isPlayerTurn: boolean, messageLog: LogMessage[], playerFleet: FleetStatus, enemyFleet: FleetStatus, animations: Animation[], battleCursor: Position): void { ctx.fillStyle = COLORS.background; ctx.fillRect(0, 0, w, h); const cs = DEFAULT_CONFIG.cellSize, cg = DEFAULT_CONFIG.cellGap, tgw = 10 * (cs + cg) - cg, fpw = 140; const lpx = 8, pox = lpx + fpw + 10, gbg = Math.max(30, Math.floor((w - pox - tgw * 2 - fpw - 16) / 3)), eox = pox + tgw + gbg, rpx = eox + tgw + 10, oy = Math.max(50, Math.floor((h - tgw) / 2) - 10); ctx.font = `bold 18px 'VT323',monospace`; ctx.fillStyle = COLORS.title; ctx.textAlign = 'center'; ctx.shadowColor = COLORS.title; ctx.shadowBlur = 8; ctx.fillText('\u2693 \u041C\u041E\u0420\u0421\u041A\u041E\u0419 \u0411\u041E\u0419 \u2693', w / 2, 22); ctx.shadowBlur = 0; ctx.font = `bold 14px 'VT323',monospace`; if (isPlayerTurn) { ctx.fillStyle = COLORS.playerShip; ctx.shadowColor = COLORS.playerShip; ctx.shadowBlur = 6; ctx.fillText('\u2694 \u0412\u0410\u0428 \u0425\u041E\u0414 \u2694', w / 2, 42); } else { ctx.fillStyle = COLORS.hit; ctx.shadowColor = COLORS.hit; ctx.shadowBlur = 6; ctx.fillText('\u2620 \u0425\u041E\u0414 \u0412\u0420\u0410\u0413\u0410 \u2620', w / 2, 42); } ctx.shadowBlur = 0; if (playerCursor) { const coord = `${COLUMN_LABELS[playerCursor.x]}${playerCursor.y + 1}`; ctx.font = `16px 'VT323',monospace`; ctx.fillStyle = COLORS.cursor; ctx.textAlign = 'center'; ctx.shadowColor = COLORS.cursor; ctx.shadowBlur = 4; ctx.fillText(`\u041F\u0440\u0438\u0446\u0435\u043B: ${coord}`, eox + tgw / 2, oy - 32); ctx.shadowBlur = 0; } drawGridLabels(ctx, pox, oy, cs, cg); drawGridLabels(ctx, eox, oy, cs, cg); ctx.font = `bold 13px 'VT323',monospace`; ctx.fillStyle = COLORS.playerShip; ctx.textAlign = 'center'; ctx.shadowColor = COLORS.playerShip; ctx.shadowBlur = 4; ctx.fillText('\u041D\u0410\u0428 \u0424\u041B\u041E\u0422', pox + tgw / 2, oy - 32); ctx.shadowBlur = 0; ctx.fillStyle = COLORS.hit; ctx.shadowColor = COLORS.hit; ctx.shadowBlur = 4; ctx.fillText('\u0412\u0420\u0410\u0416\u0415\u0421\u041A\u0418\u0419 \u0424\u041B\u041E\u0422', eox + tgw / 2, oy - 32); ctx.shadowBlur = 0; const panims = animations.filter(a => a.x < 10), eanims = animations.filter(a => a.x >= 10); drawGrid(ctx, playerGrid, pox, oy, cs, cg, null, false, false, time, panims); drawGrid(ctx, enemyGrid, eox, oy, cs, cg, playerCursor, cursorVisible, true, time, eanims); ctx.font = `bold 14px 'Press Start 2P',monospace`; ctx.fillStyle = 'rgba(255,255,255,0.08)'; ctx.textAlign = 'center'; ctx.fillText('VS', w / 2, oy + tgw / 2 + 4); drawFleetPanel(ctx, lpx, oy, fpw, playerFleet, false, time); drawFleetPanel(ctx, rpx, oy, fpw, enemyFleet, true, time); drawMessageLog(ctx, h, messageLog); drawScanlines(ctx, w, h); drawVignette(ctx, w, h); drawFlickerLine(ctx, w, h, time); }
+  // Percentage
+  drawUIText(ctx, `${Math.floor(progress * 100)}%`, cx, barY + barH + 20, 20, COLORS.text, 'center');
 
-export function drawGameOverScreen(ctx: CanvasRenderingContext2D, w: number, h: number, time: number, isVictory: boolean, bv: boolean, _msg: LogMessage[]): void { ctx.fillStyle = isVictory ? '#0a1a0a' : '#1a0808'; ctx.fillRect(0, 0, w, h); drawScanlines(ctx, w, h); drawVignette(ctx, w, h); drawFlicker(ctx, w, h, time); drawFlickerLine(ctx, w, h, time); const tg = 10 + Math.sin(time * 3) * 6; if (isVictory) { ctx.font = `${Math.min(34, w / 12)}px 'Press Start 2P',monospace`; ctx.fillStyle = COLORS.playerShip; ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; ctx.shadowColor = COLORS.playerShip; ctx.shadowBlur = tg; ctx.fillText('\u2693 \u041F\u041E\u0411\u0415\u0414\u0410! \u2693', w / 2, h * 0.30); ctx.shadowBlur = 0; ctx.strokeStyle = COLORS.gold; ctx.lineWidth = 1; ctx.beginPath(); ctx.moveTo(w * 0.25, h * 0.40); ctx.lineTo(w * 0.75, h * 0.40); ctx.stroke(); ctx.font = `${Math.min(16, w / 28)}px 'VT323',monospace`; ctx.fillStyle = COLORS.gold; ctx.textAlign = 'center'; ctx.fillText(getRandomPhrase('victory'), w / 2, h * 0.50); ctx.font = `50px monospace`; ctx.fillStyle = COLORS.gold; ctx.shadowColor = COLORS.gold; ctx.shadowBlur = 15; ctx.fillText('\u265B', w / 2, h * 0.65); ctx.shadowBlur = 0; } else { ctx.font = `${Math.min(30, w / 14)}px 'Press Start 2P',monospace`; ctx.fillStyle = COLORS.hit; ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; ctx.shadowColor = COLORS.hit; ctx.shadowBlur = tg; ctx.fillText('\u2620 \u041F\u041E\u0420\u0410\u0416\u0415\u041D\u0418\u0415 \u2620', w / 2, h * 0.30); ctx.shadowBlur = 0; ctx.strokeStyle = COLORS.sunk; ctx.lineWidth = 1; ctx.beginPath(); ctx.moveTo(w * 0.25, h * 0.40); ctx.lineTo(w * 0.75, h * 0.40); ctx.stroke(); ctx.font = `${Math.min(16, w / 28)}px 'VT323',monospace`; ctx.fillStyle = COLORS.text; ctx.textAlign = 'center'; ctx.fillText(getRandomPhrase('defeat'), w / 2, h * 0.50); ctx.font = `50px monospace`; ctx.fillStyle = COLORS.sunk; ctx.shadowColor = COLORS.sunk; ctx.shadowBlur = 15; ctx.fillText('\u2620', w / 2, h * 0.65); ctx.shadowBlur = 0; } ctx.font = `14px 'VT323',monospace`; ctx.fillStyle = '#777'; ctx.textAlign = 'center'; ctx.fillText('\u0412\u044B\u0441\u0442\u0440\u0435\u043B\u043E\u0432: \u2014 | \u041F\u043E\u043F\u0430\u0434\u0430\u043D\u0438\u0439: \u2014 | \u0422\u043E\u0447\u043D\u043E\u0441\u0442\u044C: \u2014', w / 2, h * 0.76); if (bv) { ctx.font = `${Math.min(16, w / 30)}px 'VT323',monospace`; ctx.fillStyle = COLORS.cursor; ctx.shadowColor = COLORS.cursor; ctx.shadowBlur = 8; ctx.fillText('> \u041D\u0410\u0416\u041C\u0418 ENTER \u0414\u041B\u042F \u041D\u041E\u0412\u041E\u0419 \u0418\u0413\u0420\u042B <', w / 2, h * 0.88); ctx.shadowBlur = 0; } }
+  // Decorative waves
+  ctx.strokeStyle = COLORS.water;
+  ctx.lineWidth = 1;
+  ctx.beginPath();
+  for (let i = 0; i < barW; i += 4) {
+    const waveY = barY + barH + 35 + Math.sin(time * 3 + i * 0.05) * 4;
+    ctx.lineTo(barX + i, waveY);
+  }
+  ctx.stroke();
+
+  applyCRTEffects(ctx, w, h, time);
+}
+
+// ── MAIN MENU ────────────────────────────────────────────────
+
+const MENU_ITEMS = [
+  '⚔ БОЙ С БОТОМ',
+  '👥 1 НА 1',
+  '⚙ НАСТРОЙКИ',
+  '🚪 ВЫХОД',
+];
+
+export function drawMainMenu(ctx: CanvasRenderingContext2D, w: number, h: number, selectedIndex: number, time: number): void {
+  ctx.fillStyle = COLORS.bg;
+  ctx.fillRect(0, 0, w, h);
+
+  const cx = w / 2;
+
+  // Title
+  drawPixelText(ctx, 'МОРСКОЙ БОЙ', cx, 60, 28, COLORS.gold, 'center');
+  drawUIText(ctx, '✦ Пиратская стратегия ✦', cx, 95, 22, COLORS.water, 'center');
+
+  // Decorative skull-like shape using text
+  drawPixelText(ctx, '☠', cx, 130, 36, COLORS.sunk, 'center');
+
+  // Menu items
+  const startY = 180;
+  const gap = 55;
+  for (let i = 0; i < MENU_ITEMS.length; i++) {
+    const y = startY + i * gap;
+    const isSelected = i === selectedIndex;
+    const color = isSelected ? COLORS.gold : COLORS.text;
+    const size = isSelected ? 18 : 16;
+
+    if (isSelected) {
+      // Highlight background
+      ctx.fillStyle = 'rgba(255,215,0,0.08)';
+      ctx.fillRect(cx - 220, y - 20, 440, 40);
+      drawPirateFrame(ctx, cx - 220, y - 20, 440, 40);
+      // Arrow
+      drawPixelText(ctx, '►', cx - 200, y + 5, 14, COLORS.gold, 'left');
+    }
+
+    drawPixelText(ctx, MENU_ITEMS[i], cx, y + 5, size, color, 'center');
+  }
+
+  // Footer hint
+  drawUIText(ctx, '↑↓ выбор  |  Enter — подтвердить', cx, h - 30, 16, COLORS.gridLine, 'center');
+
+  applyCRTEffects(ctx, w, h, time);
+}
+
+// ── BOT SETUP ────────────────────────────────────────────────
+
+export function drawBotSetup(
+  ctx: CanvasRenderingContext2D, w: number, h: number,
+  difficulty: string, placement: string, selectedRow: number, time: number,
+): void {
+  ctx.fillStyle = COLORS.bg;
+  ctx.fillRect(0, 0, w, h);
+
+  const cx = w / 2;
+
+  drawPixelText(ctx, 'НАСТРОЙКИ БОЯ', cx, 50, 22, COLORS.gold, 'center');
+
+  const labels = [
+    'СЛОЖНОСТЬ:',
+    'РАССТАНОВКА:',
+  ];
+  const values = [
+    `◄ ${difficulty === 'easy' ? 'ЛЁГКИЙ' : 'СЛОЖНЫЙ'} ►`,
+    `◄ ${placement === 'auto' ? 'АВТО' : 'ВРУЧНУЮ'} ►`,
+  ];
+
+  const startY = 110;
+  const gap = 60;
+  for (let i = 0; i < 2; i++) {
+    const y = startY + i * gap;
+    const isSel = selectedRow === i;
+    const labelColor = isSel ? COLORS.gold : COLORS.text;
+    const valColor = isSel ? COLORS.playerShip : COLORS.water;
+
+    drawPixelText(ctx, labels[i], cx - 180, y, 14, labelColor, 'left');
+    drawPixelText(ctx, values[i], cx + 20, y, 14, valColor, 'left');
+
+    if (isSel) {
+      ctx.fillStyle = 'rgba(255,215,0,0.06)';
+      ctx.fillRect(cx - 200, y - 16, 400, 32);
+    }
+  }
+
+  // Start button
+  const btnY = startY + 2 * gap + 20;
+  const isBtnSel = selectedRow === 2;
+  if (isBtnSel) {
+    ctx.fillStyle = 'rgba(0,255,65,0.12)';
+    ctx.fillRect(cx - 140, btnY - 18, 280, 36);
+    drawPirateFrame(ctx, cx - 140, btnY - 18, 280, 36);
+    drawPixelText(ctx, '▶ НАЧАТЬ БОЙ', cx, btnY + 6, 16, COLORS.playerShip, 'center');
+  } else {
+    drawPixelText(ctx, '▶ НАЧАТЬ БОЙ', cx, btnY + 6, 14, COLORS.text, 'center');
+  }
+
+  // Footer hints
+  drawUIText(ctx, '↑↓ выбор  |  ←→ изменить  |  Enter — старт', cx, h - 30, 16, COLORS.gridLine, 'center');
+
+  applyCRTEffects(ctx, w, h, time);
+}
+
+// ── SHIP PLACEMENT (P1_SETUP / P2_SETUP) ─────────────────────
+
+export function drawSetup(
+  ctx: CanvasRenderingContext2D, w: number, h: number,
+  grid: Grid, cursor: Cursor, shipsPlaced: number, total: number,
+  orientation: string, isValid: boolean, time: number,
+  playerLabel: string,
+): void {
+  ctx.fillStyle = COLORS.bg;
+  ctx.fillRect(0, 0, w, h);
+
+  const cx = w / 2;
+  const gridOffsetX = cx - 220;
+  const gridOffsetY = 80;
+  const cellSize = 34;
+
+  // Title
+  drawPixelText(ctx, `${playerLabel} — РАССТАНОВКА`, cx, 35, 16, COLORS.gold, 'center');
+  drawUIText(ctx, `${shipsPlaced} / ${total} кораблей установлено`, cx, 58, 18, COLORS.text, 'center');
+
+  // Draw grid
+  drawGrid(ctx, gridOffsetX, gridOffsetY, cellSize, grid, cursor, false, true, isValid, time);
+
+  // Instructions
+  const instrY = gridOffsetY + GRID_SIZE * cellSize + 35;
+  drawUIText(ctx, '←↑↓→ передвижение  |  Space — поворот  |  Enter — установить  |  R — авто', cx, instrY, 16, COLORS.gridLine, 'center');
+
+  // Orientation indicator
+  drawUIText(ctx, `Ориентация: ${orientation === 'horizontal' ? 'ГОРИЗОНТАЛЬНО' : 'ВЕРТИКАЛЬНО'}`, cx, instrY + 22, 16, COLORS.water, 'center');
+
+  // Ghost preview hint
+  if (!isValid) {
+    drawPixelText(ctx, 'НЕВОЗМОЖНАЯ ПОЗИЦИЯ!', cx, instrY + 48, 12, COLORS.hit, 'center');
+  }
+
+  applyCRTEffects(ctx, w, h, time);
+}
+
+// ── BATTLE ───────────────────────────────────────────────────
+
+export function drawBattle(
+  ctx: CanvasRenderingContext2D, w: number, h: number,
+  playerGrid: Grid, enemyGrid: Grid,
+  playerFleet: FleetStatus, enemyFleet: FleetStatus,
+  messages: Message[], isPlayerTurn: boolean,
+  cursor: Cursor, cursorVisible: boolean, time: number,
+): void {
+  ctx.fillStyle = COLORS.bg;
+  ctx.fillRect(0, 0, w, h);
+
+  const cellSize = 28;
+  const leftGridX = 30;
+  const rightGridX = w - 30 - GRID_SIZE * cellSize - 30;
+  const gridY = 80;
+
+  // Turn indicator
+  const turnText = isPlayerTurn ? '⚔ ВАШ ХОД' : '☠ ХОД БОТА';
+  const turnColor = isPlayerTurn ? COLORS.playerShip : COLORS.hit;
+  drawPixelText(ctx, turnText, w / 2, 35, 18, turnColor, 'center');
+
+  // Player label + fleet
+  drawPixelText(ctx, 'ВАШ ФЛОТ', leftGridX + (GRID_SIZE * cellSize) / 2, gridY - 15, 12, COLORS.playerShip, 'center');
+  drawFleetPanel(ctx, leftGridX - 10, gridY, playerFleet, cellSize);
+
+  // Player grid (ships visible)
+  drawGrid(ctx, leftGridX, gridY, cellSize, playerGrid, null, false, false, true, time);
+
+  // Enemy label + fleet
+  drawPixelText(ctx, 'ПРОТИВНИК', rightGridX + (GRID_SIZE * cellSize) / 2, gridY - 15, 12, COLORS.hit, 'center');
+  drawFleetPanel(ctx, rightGridX + GRID_SIZE * cellSize + 20, gridY, enemyFleet, cellSize);
+
+  // Enemy grid (fog of war) with cursor
+  drawGrid(ctx, rightGridX, gridY, cellSize, enemyGrid, isPlayerTurn && cursorVisible ? cursor : null, true, false, true, time);
+
+  // Message log
+  const logY = gridY + GRID_SIZE * cellSize + 30;
+  ctx.fillStyle = 'rgba(0,0,0,0.4)';
+  ctx.fillRect(30, logY, w - 60, 90);
+  drawPirateFrame(ctx, 30, logY, w - 60, 90);
+
+  const recentMessages = messages.slice(-4);
+  for (let i = 0; i < recentMessages.length; i++) {
+    const msg = recentMessages[i];
+    let color: string = COLORS.text;
+    if (msg.type === 'hit') color = COLORS.hit;
+    if (msg.type === 'miss') color = COLORS.miss;
+    if (msg.type === 'sunk') color = COLORS.sunk;
+    if (msg.type === 'victory') color = COLORS.playerShip;
+    if (msg.type === 'defeat') color = COLORS.hit;
+    drawUIText(ctx, msg.text, 45, logY + 18 + i * 20, 16, color, 'left');
+  }
+
+  // Controls hint
+  drawUIText(ctx, '←↑↓→ курсор  |  Enter — огонь', w / 2, h - 15, 14, COLORS.gridLine, 'center');
+
+  applyCRTEffects(ctx, w, h, time);
+}
+
+// ── BATTLE 1V1 ───────────────────────────────────────────────
+
+export function drawBattle1v1(
+  ctx: CanvasRenderingContext2D, w: number, h: number,
+  p1Grid: Grid, p2Grid: Grid,
+  p1Fleet: FleetStatus, p2Fleet: FleetStatus,
+  messages: Message[], currentPlayer: number,
+  cursor: Cursor, cursorVisible: boolean, time: number,
+): void {
+  ctx.fillStyle = COLORS.bg;
+  ctx.fillRect(0, 0, w, h);
+
+  const cellSize = 28;
+  const leftGridX = 30;
+  const rightGridX = w - 30 - GRID_SIZE * cellSize - 30;
+  const gridY = 80;
+  const isP1Turn = currentPlayer === 1;
+
+  // Turn indicator
+  const turnText = isP1Turn ? '⚔ ХОД ИГРОКА 1' : '⚔ ХОД ИГРОКА 2';
+  const turnColor = isP1Turn ? COLORS.playerShip : COLORS.water;
+  drawPixelText(ctx, turnText, w / 2, 35, 18, turnColor, 'center');
+
+  // P1 label + fleet
+  drawPixelText(ctx, 'ИГРОК 1', leftGridX + (GRID_SIZE * cellSize) / 2, gridY - 15, 12, COLORS.playerShip, 'center');
+  drawFleetPanel(ctx, leftGridX - 10, gridY, p1Fleet, cellSize);
+  drawGrid(ctx, leftGridX, gridY, cellSize, p1Grid, null, false, false, true, time);
+
+  // P2 label + fleet
+  drawPixelText(ctx, 'ИГРОК 2', rightGridX + (GRID_SIZE * cellSize) / 2, gridY - 15, 12, COLORS.water, 'center');
+  drawFleetPanel(ctx, rightGridX + GRID_SIZE * cellSize + 20, gridY, p2Fleet, cellSize);
+
+  // Show enemy grid (opponent's view) — in 1v1 each player sees their own ships
+  // But when it's your turn, you shoot at the enemy grid
+  const activeCursor = cursorVisible ? cursor : null;
+  drawGrid(ctx, rightGridX, gridY, cellSize, p2Grid, isP1Turn ? activeCursor : null, !isP1Turn, false, true, time);
+
+  // Message log
+  const logY = gridY + GRID_SIZE * cellSize + 30;
+  ctx.fillStyle = 'rgba(0,0,0,0.4)';
+  ctx.fillRect(30, logY, w - 60, 90);
+  drawPirateFrame(ctx, 30, logY, w - 60, 90);
+
+  const recentMessages = messages.slice(-4);
+  for (let i = 0; i < recentMessages.length; i++) {
+    const msg = recentMessages[i];
+    let color: string = COLORS.text;
+    if (msg.type === 'hit') color = COLORS.hit;
+    if (msg.type === 'miss') color = COLORS.miss;
+    if (msg.type === 'sunk') color = COLORS.sunk;
+    if (msg.type === 'victory') color = COLORS.playerShip;
+    if (msg.type === 'defeat') color = COLORS.hit;
+    drawUIText(ctx, msg.text, 45, logY + 18 + i * 20, 16, color, 'left');
+  }
+
+  drawUIText(ctx, '←↑↓→ курсор  |  Enter — огонь', w / 2, h - 15, 14, COLORS.gridLine, 'center');
+
+  applyCRTEffects(ctx, w, h, time);
+}
+
+// ── TRANSITION ───────────────────────────────────────────────
+
+export function drawTransition(ctx: CanvasRenderingContext2D, w: number, h: number, playerName: string, timer: number): void {
+  ctx.fillStyle = COLORS.bg;
+  ctx.fillRect(0, 0, w, h);
+
+  const cx = w / 2;
+  const cy = h / 2;
+
+  drawPixelText(ctx, '§ ПЕРЕХОД ХОДА §', cx, cy - 50, 20, COLORS.gold, 'center');
+  drawPixelText(ctx, `К ${playerName}...`, cx, cy + 10, 18, COLORS.water, 'center');
+
+  // Countdown
+  const seconds = Math.ceil(timer);
+  drawPixelText(ctx, `${seconds}`, cx, cy + 60, 36, COLORS.playerShip, 'center');
+
+  // Shield icon
+  drawPixelText(ctx, '◉', cx, cy - 90, 40, COLORS.gold, 'center');
+
+  applyCRTEffects(ctx, w, h, 0);
+}
+
+// ── SETTINGS ─────────────────────────────────────────────────
+
+export function drawSettings(ctx: CanvasRenderingContext2D, w: number, h: number, time: number): void {
+  ctx.fillStyle = COLORS.bg;
+  ctx.fillRect(0, 0, w, h);
+
+  const cx = w / 2;
+
+  drawPixelText(ctx, '⚙ НАСТРОЙКИ', cx, 40, 22, COLORS.gold, 'center');
+
+  const lines = [
+    '',
+    'ИГРА: Морской Бой — Пиратская стратегия',
+    '',
+    'УПРАВЛЕНИЕ:',
+    '←↑↓→  —  Передвижение курсора',
+    'Enter  —  Подтверждение / Огонь',
+    'Space  —  Поворот корабля',
+    'R  —  Авторасстановка',
+    'Escape  —  Назад',
+    '',
+    'ПРАВИЛА:',
+    '• Поле 10×10, координаты А-К',
+    '• Флот: 1×4, 2×3, 3×2, 4×1',
+    '• Промах: попадание — ещё ход',
+    '• Потопление — автомаркировка окрестностей',
+    '',
+    'Нажмите Enter или Escape для возврата',
+  ];
+
+  let y = 80;
+  for (const line of lines) {
+    if (line.startsWith('•') || line.startsWith('ИГРА') || line.startsWith('УПРА') || line.startsWith('ПРАВ')) {
+      drawPixelText(ctx, line, cx, y, 11, COLORS.gold, 'center');
+    } else if (line) {
+      drawUIText(ctx, line, cx, y, 17, COLORS.text, 'center');
+    }
+    y += 22;
+  }
+
+  applyCRTEffects(ctx, w, h, time);
+}
+
+// ── GAME OVER ────────────────────────────────────────────────
+
+export function drawGameOver(
+  ctx: CanvasRenderingContext2D, w: number, h: number,
+  isVictory: boolean, time: number, blinkVisible: boolean,
+  winnerName?: string,
+): void {
+  ctx.fillStyle = COLORS.bg;
+  ctx.fillRect(0, 0, w, h);
+
+  const cx = w / 2;
+  const cy = h / 2;
+
+  if (isVictory) {
+    drawPixelText(ctx, '★ ПОБЕДА! ★', cx, cy - 60, 28, COLORS.gold, 'center');
+    drawPixelText(ctx, winnerName || 'ВЫ ПОБЕДИЛИ!', cx, cy - 10, 16, COLORS.playerShip, 'center');
+  } else {
+    drawPixelText(ctx, '☠ ПОРАЖЕНИЕ ☠', cx, cy - 60, 28, COLORS.hit, 'center');
+    drawPixelText(ctx, winnerName || 'Ваш флот разбит!', cx, cy - 10, 16, COLORS.sunk, 'center');
+  }
+
+  if (blinkVisible) {
+    drawPixelText(ctx, 'Нажмите Enter для продолжения', cx, cy + 50, 12, COLORS.gold, 'center');
+  }
+
+  // Decorative
+  drawPixelText(ctx, isVictory ? '★' : '☠', cx, cy - 110, 48, isVictory ? COLORS.gold : COLORS.hit, 'center');
+
+  applyCRTEffects(ctx, w, h, time);
+}
+
+// ── Grid drawing (shared) ────────────────────────────────────
+
+function drawGrid(
+  ctx: CanvasRenderingContext2D, offsetX: number, offsetY: number,
+  cellSize: number, grid: Grid, cursor: Cursor | null,
+  isEnemyView: boolean, showGhost: boolean, ghostValid: boolean,
+  time: number,
+): void {
+  // Column labels
+  ctx.font = `${Math.floor(cellSize * 0.55)}px 'VT323', monospace`;
+  ctx.textAlign = 'center';
+  ctx.fillStyle = COLORS.gridLine;
+  for (let x = 0; x < GRID_SIZE; x++) {
+    ctx.fillText(COL_LABELS[x], offsetX + x * cellSize + cellSize / 2, offsetY - 6);
+  }
+
+  // Row labels
+  ctx.textAlign = 'right';
+  for (let y = 0; y < GRID_SIZE; y++) {
+    ctx.fillText(`${y + 1}`, offsetX - 6, offsetY + y * cellSize + cellSize / 2 + 5);
+  }
+
+  // Cells
+  for (let y = 0; y < GRID_SIZE; y++) {
+    for (let x = 0; x < GRID_SIZE; x++) {
+      const cellX = offsetX + x * cellSize;
+      const cellY = offsetY + y * cellSize;
+      const cell = grid.cells[y][x];
+
+      // Base
+      ctx.fillStyle = COLORS.bg;
+      ctx.fillRect(cellX + 1, cellY + 1, cellSize - 2, cellSize - 2);
+
+      // Cell content
+      switch (cell) {
+        case 'ship':
+          if (!isEnemyView) {
+            ctx.fillStyle = COLORS.playerShip;
+            ctx.fillRect(cellX + 3, cellY + 3, cellSize - 6, cellSize - 6);
+          } else {
+            ctx.fillStyle = 'rgba(0,255,255,0.03)';
+            ctx.fillRect(cellX + 1, cellY + 1, cellSize - 2, cellSize - 2);
+          }
+          break;
+        case 'hit':
+          ctx.fillStyle = COLORS.hit;
+          ctx.font = `${Math.floor(cellSize * 0.7)}px 'VT323', monospace`;
+          ctx.textAlign = 'center';
+          ctx.fillText('✖', cellX + cellSize / 2, cellY + cellSize / 2 + 5);
+          break;
+        case 'miss':
+          ctx.fillStyle = COLORS.miss;
+          ctx.beginPath();
+          ctx.arc(cellX + cellSize / 2, cellY + cellSize / 2, 2, 0, Math.PI * 2);
+          ctx.fill();
+          break;
+        case 'sunk':
+          ctx.fillStyle = 'rgba(255,102,0,0.3)';
+          ctx.fillRect(cellX + 1, cellY + 1, cellSize - 2, cellSize - 2);
+          ctx.fillStyle = COLORS.sunk;
+          ctx.font = `${Math.floor(cellSize * 0.6)}px 'VT323', monospace`;
+          ctx.textAlign = 'center';
+          ctx.fillText('#', cellX + cellSize / 2, cellY + cellSize / 2 + 5);
+          break;
+        default:
+          ctx.fillStyle = 'rgba(0,255,255,0.03)';
+          ctx.fillRect(cellX + 1, cellY + 1, cellSize - 2, cellSize - 2);
+          break;
+      }
+
+      // Grid line
+      ctx.strokeStyle = COLORS.gridLine;
+      ctx.lineWidth = 1;
+      ctx.strokeRect(cellX, cellY, cellSize, cellSize);
+    }
+  }
+
+  // Cursor
+  if (cursor) {
+    const cx = offsetX + cursor.x * cellSize;
+    const cy = offsetY + cursor.y * cellSize;
+    const pulse = Math.sin(time * 6) * 0.3 + 0.7;
+
+    ctx.strokeStyle = `rgba(255,255,0,${pulse})`;
+    ctx.lineWidth = 2;
+    ctx.strokeRect(cx + 1, cy + 1, cellSize - 2, cellSize - 2);
+
+    ctx.fillStyle = `rgba(255,255,0,${pulse * 0.3})`;
+    ctx.fillRect(cx + 1, cy + 1, cellSize - 2, cellSize - 2);
+
+    // [+] symbol
+    ctx.fillStyle = COLORS.cursor;
+    ctx.font = `${Math.floor(cellSize * 0.6)}px 'VT323', monospace`;
+    ctx.textAlign = 'center';
+    ctx.fillText('[+]', cx + cellSize / 2, cy + cellSize / 2 + 5);
+  }
+}
+
+// ── Fleet panel ──────────────────────────────────────────────
+
+function drawFleetPanel(ctx: CanvasRenderingContext2D, x: number, y: number, fleet: FleetStatus, cellSize: number): void {
+  const panelW = 20;
+  const shipSize = 8;
+  let drawY = y;
+
+  ctx.font = `10px 'VT323', monospace`;
+  ctx.textAlign = 'left';
+
+  for (const ship of fleet.ships) {
+    const color = ship.sunk ? COLORS.sunk : COLORS.playerShip;
+    ctx.fillStyle = color;
+    for (let i = 0; i < ship.size; i++) {
+      ctx.fillRect(x + (shipSize + 2) * i, drawY, shipSize, shipSize);
+    }
+    if (ship.sunk) {
+      ctx.strokeStyle = COLORS.hit;
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      ctx.moveTo(x - 2, drawY - 2);
+      ctx.lineTo(x + ship.size * (shipSize + 2), drawY + shipSize + 2);
+      ctx.stroke();
+    }
+    drawY += shipSize + 6;
+  }
+}
+
+// ── EXIT screen ──────────────────────────────────────────────
+
+export function drawExit(ctx: CanvasRenderingContext2D, w: number, h: number, time: number): void {
+  ctx.fillStyle = COLORS.bg;
+  ctx.fillRect(0, 0, w, h);
+
+  const cx = w / 2;
+  const cy = h / 2;
+
+  drawPixelText(ctx, '🚪 ВЫХОД', cx, cy - 40, 24, COLORS.gold, 'center');
+  drawPixelText(ctx, 'Нажмите F5 для перезапуска', cx, cy + 20, 14, COLORS.text, 'center');
+
+  applyCRTEffects(ctx, w, h, time);
+}
